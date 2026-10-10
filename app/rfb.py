@@ -393,7 +393,7 @@ class RFBClient:
         return hashlib.md5(self.fb.tobytes()).hexdigest()
 
     def screenshot_png(self) -> bytes:
-        img = Image.fromarray(self.frame_rgb(), "RGB")
+        img = Image.fromarray(self.frame_rgb())  # modo inferido (uint8 HxWx3 = RGB); el parámetro mode se elimina en Pillow 13
         buf = io.BytesIO()
         img.save(buf, format="PNG", optimize=False, compress_level=6)
         return buf.getvalue()
@@ -405,7 +405,7 @@ class RFBClient:
             x1 = min(self.width, x0 + 20)
         if y1 - y0 < 20:
             y1 = min(self.height, y0 + 20)
-        img = Image.fromarray(self.frame_rgb()[y0:y1, x0:x1], "RGB")
+        img = Image.fromarray(np.ascontiguousarray(self.frame_rgb()[y0:y1, x0:x1]))
         scale = min(2.0, max_w / max(1, (x1 - x0)))
         if scale > 1.0:
             img = img.resize((int((x1 - x0) * scale), int((y1 - y0) * scale)), Image.LANCZOS)

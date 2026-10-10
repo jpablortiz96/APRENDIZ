@@ -122,7 +122,7 @@ class TestVerifierEndToEnd(unittest.IsolatedAsyncioTestCase):
         rec = TaskRecord(task_id="e2e", tarea="¿Cuántos registros cumplen la condición?")
         rec.plan = {"tipo": "consultar"}
         st = _SingleTask(None, rec, "wss://example.test/websockify", "secret", Secrets())
-        st.rfb = SimpleNamespace(screenshot_png=lambda: b"final", wait_stable=AsyncMock(return_value=None))
+        st.rfb = SimpleNamespace(screenshot_png=lambda: b"final", wait_stable=AsyncMock(return_value=None), closed=False)
         st.evidence_shots = [(3, "Página 1/2", b"p1"), (6, "Página 2/2", b"p2")]
         st.last_shots = [b"p2"]
         rec.steps = 8

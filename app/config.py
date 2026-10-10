@@ -23,7 +23,19 @@ ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 MODEL_OPERATOR = os.environ.get("MODEL_OPERATOR", "claude-sonnet-5-5")
 MODEL_PLANNER = os.environ.get("MODEL_PLANNER", MODEL_OPERATOR)
 MODEL_VERIFIER = os.environ.get("MODEL_VERIFIER", MODEL_OPERATOR)
-MODEL_CARTOGRAPHER = os.environ.get("MODEL_CARTOGRAPHER", "claude-haiku-5-5")
+# "claude-haiku-5-5" (default anterior) no es un ID de modelo válido: el mapa nunca se guardaba.
+MODEL_CARTOGRAPHER = os.environ.get("MODEL_CARTOGRAPHER", "claude-haiku-4-5")
+
+
+def _flag(name: str, default: bool) -> bool:
+    return os.environ.get(name, "1" if default else "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+# Feature flags v0.2 (rollback individual: poner a 0 en Railway y redeploy, sin tocar código).
+MEMORY_V2 = _flag("MEMORY_V2", True)          # mapas sin coordenadas + confianza + detección de drift visual
+RECOVERY_V2 = _flag("RECOVERY_V2", True)      # reconexión VNC acotada + guarda anti-repetición de escrituras
+PERCEPTION_V2 = _flag("PERCEPTION_V2", True)  # no reenviar capturas idénticas + caché de prompt incremental
+VNC_RECONNECTS = _int("VNC_RECONNECTS", 2)    # reconexiones máximas por tarea
 
 # Presupuesto de tiempo por tarea (segundos desde POST /tasks). El evaluador corta a los 300 s.
 OPERATOR_DEADLINE = _float("OPERATOR_DEADLINE", 225.0)   # el operador deja de actuar aquí

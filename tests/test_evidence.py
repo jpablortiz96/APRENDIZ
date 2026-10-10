@@ -11,7 +11,7 @@ class TestPagedEvidence(unittest.IsolatedAsyncioTestCase):
         rec = TaskRecord(task_id="ejemplo", tarea="¿Cuántos registros del cliente exacto?")
         rec.plan = {"tipo": "consultar"}
         st = _SingleTask(None, rec, "wss://example.test/websockify", "secret", Secrets())
-        st.rfb = type("FakeRFB", (), {"screenshot_png": lambda _: b"pagina-1"})()
+        st.rfb = type("FakeRFB", (), {"screenshot_png": lambda _: b"pagina-1", "closed": False})()
         return st
 
     async def test_remember_anchors_current_screenshot(self):
@@ -41,7 +41,7 @@ class TestPagedEvidence(unittest.IsolatedAsyncioTestCase):
         st = self.make_runner()
         st.rfb = type("FakeRFB", (), {
             "screenshot_png": lambda _: b"actual",
-            "wait_stable": AsyncMock(return_value=None),
+            "wait_stable": AsyncMock(return_value=None), "closed": False,
         })()
         st.last_shots = [b"previa"]
         st.rec.steps = 6

@@ -99,7 +99,7 @@ def validate_schema(obj: Any, schema: dict, path: str = "$") -> None:
 
 
 async def create(model: str, system: str, messages: list, tools: list | None = None, max_tokens: int = 1200,
-                 attempts: int = 3, **kw) -> Any:
+                 attempts: int = 3, cache_messages: bool = False, **kw) -> Any:
     last = None
     for i in range(attempts):
         try:
@@ -108,6 +108,10 @@ async def create(model: str, system: str, messages: list, tools: list | None = N
                           messages=messages, **kw)
             if tools:
                 params["tools"] = tools
+            if cache_messages:
+                # Caché automática del último bloque: cada paso del Operator reutiliza el historial previo
+                # hasta la primera captura podada, en lugar de pagarlo entero otra vez.
+                params["cache_control"] = {"type": "ephemeral"}
             return await client().messages.create(**params)
         except (anthropic.RateLimitError, anthropic.InternalServerError, anthropic.APIConnectionError,
                 anthropic.APITimeoutError) as e:

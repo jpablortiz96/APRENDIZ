@@ -15,13 +15,14 @@ from typing import Optional
 
 from . import config, llm, prompts
 from .guardian import ActionRecord, LoopDetector, Secrets, check_action, format_summary
-from .memory import AppMemory
+from .memory import AppMemory, ui_signature
 from .rfb import RFBClient, RFBError
 from .tools import ACTION_TOOLS, TOOLS
 
 log = logging.getLogger("aprendiz.agent")
 
 CHANGE_AREA = 2500  # px² repintados para considerar que la pantalla cambió (ignora el cursor del ratón)
+WRITE_TOLERANCE_PX = 15  # dos clics de cambio a menos de esta distancia se consideran "la misma acción"
 
 VERIFIER_SCHEMA = {
     "type": "object",
@@ -101,6 +102,13 @@ class TaskRunner:
             await runner.close()
             rec.finished = rec.finished or time.time()
             self._write_log(rec)
+            if config.MEMORY_V2 and rec.app_name and rec.actions:
+                # Éxito verificado fija la firma de UI del mapa; agotar tiempo/pasos cuenta como fallo de ruta.
+                ok = True if rec.estado == "terminada" else (False if runner.nav_failure else None)
+                try:
+                    await self.memory.record_outcome(rec.app_name, ok, runner.ui_sig)
+                except Exception as e:
+                    log.warning("memoria: no se pudo registrar resultado: %s", e)
             # Consolidar el mapa de la app (no toca el escritorio)
             if rec.app_name and rec.actions:
                 asyncio.create_task(runner.cartographer())
@@ -130,6 +138,15 @@ class _SingleTask:
         self.evidence_shots: list[tuple[int, str, bytes]] = []
         self.done = False
         self._pending_feedback: tuple[str, bytes] | None = None
+        # v0.2
+        self.ui_sig: Optional[list] = None        # firma visual de la pantalla inicial (MEMORY_V2)
+        self.map_meta: dict = {}
+        self.nav_failure = False                  # se agotó tiempo/pasos: la ruta usada no funcionó
+        self.reconnects = 0                       # RECOVERY_V2
+        self.last_write: Optional[tuple] = None   # última acción de cambio ejecutada (guarda anti-duplicados)
+        self.observed_since_write = True
+        self.last_sent_hash: Optional[str] = None  # PERCEPTION_V2: hash de la última captura completa enviada
+        self.images_since_full = 0
 
     # ----------------------------------------------------------------- tiempo
     def elapsed(self) -> float:
@@ -167,8 +184,7 @@ class _SingleTask:
         # 1) Conectar al escritorio (un reintento)
         for attempt in (1, 2):
             try:
-                self.rfb = RFBClient(self.url, self.password, encodings=config.encodings_list(),
-                                     connect_timeout=config.VNC_CONNECT_TIMEOUT)
+                self.rfb = self._make_rfb(config.VNC_CONNECT_TIMEOUT)
                 await self.rfb.connect()
                 break
             except Exception as e:
@@ -182,8 +198,13 @@ class _SingleTask:
         rfb = self.rfb
         assert rfb is not None
         await rfb.wait_stable(min_wait=0.6)
-        shot = rfb.screenshot_png()
+        shot, shot_hash = self._capture()
         self._save_shot(shot, 0)
+        if config.MEMORY_V2:
+            try:
+                self.ui_sig = ui_signature(rfb.frame_rgb())
+            except Exception as e:
+                log.warning("firma de UI no disponible: %s", e)
 
         # 2) Planner
         try:
@@ -210,11 +231,19 @@ class _SingleTask:
                           dec.get("claves") or [])
             return
 
-        app_map = self.runner.memory.get(rec.app_name)
+        if config.MEMORY_V2:
+            app_map, self.map_meta = self.runner.memory.context(rec.app_name, self.ui_sig)
+            if self.map_meta:
+                log.info("mapa '%s': confianza=%s drift=%s dist=%s", rec.app_name, self.map_meta.get("confianza"),
+                         self.map_meta.get("drift"), self.map_meta.get("distancia_ui"))
+        else:
+            app_map = self.runner.memory.get(rec.app_name)
 
         # 3) Operator loop
-        first = prompts.operator_first_message(rec.tarea, plan, app_map, self.remaining_operator(), 1, config.MAX_STEPS)
+        first = prompts.operator_first_message(rec.tarea, plan, app_map, self.remaining_operator(), 1, config.MAX_STEPS,
+                                               map_meta=self.map_meta or None)
         self.messages = [{"role": "user", "content": [{"type": "text", "text": first}, llm.image_block(shot)]}]
+        self.last_sent_hash = shot_hash
         self.last_shots = [shot]
         verify_rounds = 0
         no_tool_strikes = 0
@@ -229,6 +258,7 @@ class _SingleTask:
             resp = await llm.create(
                 config.MODEL_OPERATOR, prompts.OPERATOR_SYSTEM, self.messages, tools=TOOLS, max_tokens=1024,
                 tool_choice={"type": "auto", "disable_parallel_tool_use": True},
+                cache_messages=config.PERCEPTION_V2,
             )
             blocks = []
             for b in resp.content:
@@ -271,6 +301,7 @@ class _SingleTask:
         self._timeout_finalize("Se agotó el número máximo de pasos sin verificar el resultado.")
 
     def _timeout_finalize(self, motivo: str = "Se agotó el tiempo disponible sin verificar el resultado."):
+        self.nav_failure = True
         hechas = "; ".join(a.short() for a in self.rec.actions[-5:])
         self.finalize("fallida", motivo, None, None, extra=("Últimas acciones: " + hechas) if hechas else "")
 
@@ -283,6 +314,10 @@ class _SingleTask:
 
         if name == "done":
             return await self._handle_done(args, verify_rounds)
+
+        if config.RECOVERY_V2 and rfb.closed:
+            # La decisión se tomó sobre una pantalla que ya no es fiable: no se ejecuta, se recupera y se re-observa.
+            return await self._recover_connection(step, name, uncertain=False)
 
         if name == "remember":
             note = str(args.get("note", "")).strip()[:300]
@@ -308,6 +343,8 @@ class _SingleTask:
             except Exception as e:
                 return [{"type": "text", "text": f"Zoom inválido: {e}"}]
             rec.actions.append(ActionRecord(step, name, {k: args.get(k) for k in ("x0", "y0", "x1", "y1")}, why, "lectura"))
+            self.observed_since_write = True
+            self.images_since_full += 1
             return [{"type": "text", "text": f"Zoom de la región {box} (ampliada). Las coordenadas para clics siguen siendo las de la pantalla completa. Tiempo restante: {self.fmt_remaining()}."},
                     llm.image_block(png)]
 
@@ -315,26 +352,37 @@ class _SingleTask:
             secs = max(0.5, min(float(args.get("seconds", 2)), 10.0))
             await asyncio.sleep(secs)
             await rfb.wait_stable(min_wait=0.2)
-            shot = rfb.screenshot_png()
+            shot, h = self._capture()
             self._remember_shot(shot, step)
             rec.actions.append(ActionRecord(step, name, {"seconds": secs}, why, "lectura"))
-            return [{"type": "text", "text": f"Esperé {secs:.0f}s. Captura actual. Tiempo restante: {self.fmt_remaining()}."},
-                    llm.image_block(shot)]
+            self.observed_since_write = True
+            return self._screen_blocks(f"Esperé {secs:.0f}s. Captura actual. Tiempo restante: {self.fmt_remaining()}.", shot, h)
 
         if name in ACTION_TOOLS:
             block = check_action(name, args, rec.plan)
             if block:
                 rec.actions.append(ActionRecord(step, name, args, why, risk, blocked=True))
                 return [{"type": "text", "text": block + f" Tiempo restante: {self.fmt_remaining()}."}]
+            wkey = _write_key(name, args)
+            if config.RECOVERY_V2:
+                block = self._write_guard(wkey)
+                if block:
+                    rec.actions.append(ActionRecord(step, name, args, why, risk, blocked=True))
+                    return [{"type": "text", "text": block + f" Tiempo restante: {self.fmt_remaining()}."}]
             t_act = time.monotonic()
             try:
                 await self._do_action(name, args)
             except (RFBError, KeyError, ValueError) as e:
                 rec.actions.append(ActionRecord(step, name, args, why, risk))
+                if config.RECOVERY_V2 and self.rfb is not None and self.rfb.closed:
+                    # No sabemos si el servidor alcanzó a recibir la acción: tratarla como posiblemente aplicada.
+                    self.last_write, self.observed_since_write = wkey, False
+                    return await self._recover_connection(step, name, uncertain=True)
                 return [{"type": "text", "text": f"La acción no se pudo ejecutar ({e}). Revisa los parámetros."}]
+            self.last_write, self.observed_since_write = wkey, False
             await rfb.wait_stable()
             changed = rfb.area_since(t_act) >= CHANGE_AREA
-            shot = rfb.screenshot_png()
+            shot, h = self._capture()
             self._remember_shot(shot, step)
             rec.actions.append(ActionRecord(step, name, args, why, risk, changed=changed))
             warn = self.loop.push(name, args, changed)
@@ -348,7 +396,7 @@ class _SingleTask:
                 txt += "\n⏰ Quedan menos de 45 s: llama a done AHORA con lo que hayas verificado (o fallida si no verificaste)."
             if rfb.closed:
                 txt += "\n⚠ La conexión con el escritorio se cerró."
-            return [{"type": "text", "text": txt}, llm.image_block(shot)]
+            return self._screen_blocks(txt, shot, h)
 
         return [{"type": "text", "text": f"Herramienta desconocida: {name}"}]
 
@@ -402,6 +450,14 @@ class _SingleTask:
 
         # Verificación independiente con captura fresca
         can_verify = self.elapsed() < config.VERIFY_DEADLINE - 12
+        if can_verify and config.RECOVERY_V2 and rfb.closed:
+            # Sin conexión, el framebuffer es una foto vieja: nunca verificar sobre ella.
+            if not await self._reconnect():
+                self.finalize("fallida", "Se perdió la conexión con el escritorio y no se pudo verificar el resultado. " + resumen,
+                              None, [str(c) for c in claves])
+                return []
+            rfb = self.rfb
+            assert rfb is not None
         if can_verify:
             await rfb.wait_stable(min_wait=0.3)
             fresh = rfb.screenshot_png()
@@ -441,6 +497,7 @@ class _SingleTask:
     def _verify_feedback_content(self) -> list:
         motivo, fresh = self._pending_feedback or ("sin evidencia", self.last_shots[-1])
         self._pending_feedback = None
+        self.last_sent_hash, self.images_since_full = None, 0
         return [{"type": "text", "text":
                  f"VERIFICADOR: todavía NO está verificado: {motivo}. Muestra la evidencia en pantalla (abre la ficha o la lista, aplica el filtro, lee el mensaje) y vuelve a llamar a done. "
                  f"Si no puedes demostrarlo, reporta fallida. Tiempo restante: {self.fmt_remaining()}."},
@@ -485,7 +542,7 @@ class _SingleTask:
                 "ACCIONES:\n" + "\n".join(a.short() for a in rec.actions) +
                 "\nNOTAS DEL OPERATOR:\n" + "\n".join(f"- {n}" for n in rec.notes)
             )
-            mapa = await asyncio.wait_for(llm.call_json(config.MODEL_CARTOGRAPHER, prompts.CARTOGRAPHER_SYSTEM, text, max_tokens=4096, role="cartographer"), timeout=60)
+            mapa = await asyncio.wait_for(llm.call_json(config.MODEL_CARTOGRAPHER, prompts.CARTOGRAPHER_SYSTEM if config.MEMORY_V2 else prompts.CARTOGRAPHER_SYSTEM_V1, text, max_tokens=4096, role="cartographer"), timeout=60)
             if isinstance(mapa, dict) and mapa:
                 s = json.dumps(mapa, ensure_ascii=False)
                 if len(s) > 3500:
@@ -495,6 +552,84 @@ class _SingleTask:
                 log.info("mapa de '%s' actualizado", rec.app_name)
         except Exception as e:
             log.warning("cartographer falló: %s", e)
+
+    # ------------------------------------------------------- recuperación v0.2
+    def _make_rfb(self, timeout: float) -> RFBClient:
+        return RFBClient(self.url, self.password, encodings=config.encodings_list(), connect_timeout=timeout)
+
+    async def _reconnect(self) -> bool:
+        """Reconexión VNC acotada por número de intentos y por el tiempo restante del Operator."""
+        if self.reconnects >= config.VNC_RECONNECTS:
+            return False
+        budget = min(config.VNC_CONNECT_TIMEOUT, self.remaining_operator() - 10)
+        if budget < 5:
+            return False
+        self.reconnects += 1
+        await self.close()
+        new = self._make_rfb(budget)
+        try:
+            await asyncio.wait_for(new.connect(), timeout=budget + 5)
+            await new.wait_stable(min_wait=0.6)
+        except Exception as e:
+            log.warning("reconexión VNC %d fallida: %s", self.reconnects, type(e).__name__)
+            try:
+                await new.close()
+            except Exception:
+                pass
+            return False
+        log.info("reconexión VNC %d correcta", self.reconnects)
+        self.rfb = new
+        self.last_sent_hash, self.images_since_full = None, 0
+        return True
+
+    async def _recover_connection(self, step: int, name: str, uncertain: bool) -> list:
+        rec = self.rec
+        if not await self._reconnect():
+            rec.error = "vnc: conexión perdida"
+            hechas = "; ".join(a.short() for a in rec.actions[-5:])
+            self.finalize("fallida", "Se perdió la conexión con el escritorio y no se pudo restablecer a tiempo; "
+                          "el resultado no está verificado.", None, None,
+                          extra=("Últimas acciones: " + hechas) if hechas else "")
+            return []
+        rec.actions.append(ActionRecord(step, "reconnect", {"n": self.reconnects}, "recuperar conexión VNC", "lectura"))
+        shot, h = self._capture()
+        self._remember_shot(shot, step)
+        estado = (f"La acción '{name}' pudo haberse aplicado o no antes del corte." if uncertain else
+                  f"Tu acción '{name}' NO se ejecutó: la decidiste sobre una pantalla que ya no era fiable.")
+        txt = (f"⚠ Se perdió la conexión con el escritorio y se restableció ({self.reconnects}/{config.VNC_RECONNECTS}). "
+               f"{estado} Esta es la pantalla REAL actual: compruébala antes de repetir cualquier cambio "
+               f"(un guardado repetido puede duplicar). Tiempo restante: {self.fmt_remaining()}.")
+        return self._screen_blocks(txt, shot, h)
+
+    def _write_guard(self, wkey: Optional[tuple]) -> Optional[str]:
+        """Bloquea repetir de inmediato la MISMA acción de cambio sin haber observado antes el resultado."""
+        if wkey is None or self.last_write is None or self.observed_since_write:
+            return None
+        if not _same_write(self.last_write, wkey):
+            return None
+        return ("⛔ Guarda anti-duplicados: acabas de ejecutar esta misma acción de cambio y aún no comprobaste su efecto. "
+                "Repetirla puede duplicar un guardado, creación o exportación. Primero comprueba el estado real: usa wait "
+                "(carga lenta) o zoom (mensaje de confirmación, lista, ficha). Si tras observar confirmas que no se aplicó, "
+                "podrás repetirla.")
+
+    def _capture(self) -> tuple[bytes, Optional[str]]:
+        rfb = self.rfb
+        assert rfb is not None
+        try:
+            h = rfb.frame_hash()
+        except Exception:
+            h = None
+        return rfb.screenshot_png(), h
+
+    def _screen_blocks(self, txt: str, shot: bytes, h: Optional[str]) -> list:
+        """PERCEPTION_V2: no reenviar una captura idéntica a la última completa que el modelo aún tiene en contexto."""
+        if (config.PERCEPTION_V2 and h is not None and h == self.last_sent_hash
+                and self.images_since_full < config.KEEP_IMAGES - 1):
+            return [{"type": "text", "text": txt + "\nCaptura no adjuntada: la pantalla es IDÉNTICA píxel a píxel a la última "
+                     "captura completa que ya tienes. Sin cambio no siempre es fracaso: puede ser carga lenta (wait), "
+                     "foco en otro control o un estado que ya estaba aplicado."}]
+        self.last_sent_hash, self.images_since_full = h, 0
+        return [{"type": "text", "text": txt}, llm.image_block(shot)]
 
     # ------------------------------------------------------------ utilidades
     def _remember_shot(self, shot: bytes, step: int):
@@ -535,3 +670,26 @@ class _SingleTask:
                             seen += 1
                             if seen > keep:
                                 items[j] = {"type": "text", "text": "[captura anterior omitida]"}
+
+
+def _write_key(name: str, args: dict) -> Optional[tuple]:
+    """Identidad de una acción de cambio no idempotente (clic o tecla que confirma). Escribir texto con
+    replace=true es idempotente y no se guarda."""
+    if str(args.get("risk", "")) != "cambio_esperado":
+        return None
+    try:
+        if name in ("click", "double_click"):
+            return (name, int(args["x"]), int(args["y"]))
+        if name == "press_key":
+            return (name, str(args.get("key", "")).strip().lower(), 0)
+    except (KeyError, TypeError, ValueError):
+        return None
+    return None
+
+
+def _same_write(a: tuple, b: tuple) -> bool:
+    if a[0] != b[0]:
+        return False
+    if a[0] == "press_key":
+        return a[1] == b[1]
+    return abs(a[1] - b[1]) <= WRITE_TOLERANCE_PX and abs(a[2] - b[2]) <= WRITE_TOLERANCE_PX
