@@ -23,6 +23,18 @@ log = logging.getLogger("aprendiz.agent")
 
 CHANGE_AREA = 2500  # px² repintados para considerar que la pantalla cambió (ignora el cursor del ratón)
 
+VERIFIER_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "verificado": {"type": "boolean"},
+        "motivo": {"type": "string"},
+        "riesgo_cambios_extra": {"type": "string"},
+        "respuesta_corregida": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+    },
+    "required": ["verificado", "motivo", "riesgo_cambios_extra", "respuesta_corregida"],
+    "additionalProperties": False,
+}
+
 
 @dataclass
 class TaskRecord:
@@ -178,7 +190,8 @@ class _SingleTask:
             plan = await llm.call_json(
                 config.MODEL_PLANNER, prompts.PLANNER_SYSTEM,
                 [{"type": "text", "text": f"TAREA: {rec.tarea}\n\nCaptura inicial del escritorio:"}, llm.image_block(shot)],
-                max_tokens=1200,
+                max_tokens=config.PLANNER_MAX_TOKENS, deadline=self.t0 + config.OPERATOR_DEADLINE - 60,
+                role="planner",
             )
         except Exception as e:
             log.warning("planner falló: %s", e)
@@ -277,14 +290,15 @@ class _SingleTask:
                 rec.notes.append(note)
                 # La nota debe ir acompañada de la pantalla que efectivamente ve el operador.
                 # Es una captura en memoria, no una acción de la app, y no modifica datos.
-                if rec.plan.get("tipo") == "consultar":
+                # "otro" es el plan por defecto si el Planner falla: también puede ser una consulta.
+                if rec.plan.get("tipo") in ("consultar", "otro"):
                     shot = rfb.screenshot_png()
                     self.evidence_shots.append((step, note, shot))
                     # Presupuesto acotado para el Verifier: máximo seis pantallas ancladas.
                     if len(self.evidence_shots) > 6:
                         self.evidence_shots.pop(0)
             rec.actions.append(ActionRecord(step, name, {"note": note}, "conservar evidencia", "lectura"))
-            detail = ("Nota y captura visual conservadas para el Verifier." if note and rec.plan.get("tipo") == "consultar"
+            detail = ("Nota y captura visual conservadas para el Verifier." if note and rec.plan.get("tipo") in ("consultar", "otro")
                       else "Nota guardada.")
             return [{"type": "text", "text": f"{detail} Tiempo restante: {self.fmt_remaining()}."}]
 
@@ -403,7 +417,7 @@ class _SingleTask:
             verificado = ver.get("verificado") is True and (not riesgo or riesgo == "ninguno")
             if verificado:
                 correccion = ver.get("respuesta_corregida")
-                if self.rec.plan.get("tipo") == "consultar" and correccion is not None:
+                if self.rec.plan.get("tipo") == "consultar" and str(correccion or "").strip():
                     # La línea respuesta es evaluada por separado; priorizar el dato
                     # que el verificador dice haber observado en la captura fresca.
                     respuesta = str(correccion)
@@ -454,7 +468,11 @@ class _SingleTask:
                 {"type": "text", "text": "CAPTURA ACTUAL (fresca)" if i == len(self.last_shots[-2:]) - 1 else "CAPTURA RECIENTE"},
                 llm.image_block(shot),
             ])
-        return await llm.call_json(config.MODEL_VERIFIER, prompts.VERIFIER_SYSTEM, content, max_tokens=800)
+        return await llm.call_json(
+            config.MODEL_VERIFIER, prompts.VERIFIER_SYSTEM, content, max_tokens=config.VERIFIER_MAX_TOKENS,
+            schema=VERIFIER_SCHEMA, retry_max_tokens=config.VERIFIER_RETRY_MAX_TOKENS,
+            deadline=self.t0 + config.VERIFY_DEADLINE, role="verifier",
+        )
 
     # ----------------------------------------------------------- cartographer
     async def cartographer(self):
@@ -467,7 +485,7 @@ class _SingleTask:
                 "ACCIONES:\n" + "\n".join(a.short() for a in rec.actions) +
                 "\nNOTAS DEL OPERATOR:\n" + "\n".join(f"- {n}" for n in rec.notes)
             )
-            mapa = await asyncio.wait_for(llm.call_json(config.MODEL_CARTOGRAPHER, prompts.CARTOGRAPHER_SYSTEM, text, max_tokens=1500), timeout=60)
+            mapa = await asyncio.wait_for(llm.call_json(config.MODEL_CARTOGRAPHER, prompts.CARTOGRAPHER_SYSTEM, text, max_tokens=4096, role="cartographer"), timeout=60)
             if isinstance(mapa, dict) and mapa:
                 s = json.dumps(mapa, ensure_ascii=False)
                 if len(s) > 3500:

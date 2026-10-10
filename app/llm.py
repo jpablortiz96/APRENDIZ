@@ -6,6 +6,7 @@ import base64
 import json
 import logging
 import re
+import time
 from typing import Any
 
 import anthropic
@@ -29,17 +30,72 @@ def image_block(png: bytes) -> dict:
                                         "data": base64.b64encode(png).decode("ascii")}}
 
 
+class LLMJSONError(ValueError):
+    """El modelo no devolvió un JSON utilizable. `reason`: max_tokens | refusal | empty | invalid_json | schema."""
+
+    def __init__(self, reason: str, detail: str = ""):
+        super().__init__(f"{reason}: {detail}" if detail else reason)
+        self.reason = reason
+
+
 def parse_json(text: str) -> dict:
-    """Extrae el primer objeto JSON del texto (tolera ```json ... ```)."""
-    t = text.strip()
+    """Extrae el primer objeto JSON del texto (tolera ```json ... ``` y prosa con llaves alrededor)."""
+    t = (text or "").strip()
     m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", t, re.DOTALL)
     if m:
         t = m.group(1)
-    else:
-        i, j = t.find("{"), t.rfind("}")
-        if i >= 0 and j > i:
-            t = t[i:j + 1]
-    return json.loads(t)
+    try:
+        obj = json.loads(t)
+        if isinstance(obj, dict):
+            return obj
+    except json.JSONDecodeError:
+        pass
+    dec = json.JSONDecoder()
+    for i, ch in enumerate(t):
+        if ch != "{":
+            continue
+        try:
+            obj, _ = dec.raw_decode(t, i)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict):
+            return obj
+    raise LLMJSONError("invalid_json", f"sin objeto JSON completo ({len(t)} caracteres)")
+
+
+_TYPES = {"object": dict, "string": str, "boolean": bool, "null": type(None), "array": list}
+
+
+def validate_schema(obj: Any, schema: dict, path: str = "$") -> None:
+    """Validación mínima (subconjunto usado por nuestros esquemas): type, anyOf, required, additionalProperties, enum."""
+    if "anyOf" in schema:
+        for sub in schema["anyOf"]:
+            try:
+                validate_schema(obj, sub, path)
+                break
+            except LLMJSONError:
+                continue
+        else:
+            raise LLMJSONError("schema", f"{path} no cumple ninguna alternativa")
+    types = schema.get("type")
+    if types is not None:
+        types = types if isinstance(types, list) else [types]
+        if not any(isinstance(obj, _TYPES[t]) and not (t != "boolean" and isinstance(obj, bool)) for t in types):
+            raise LLMJSONError("schema", f"{path} debe ser {'|'.join(types)}")
+    if "enum" in schema and obj not in schema["enum"]:
+        raise LLMJSONError("schema", f"{path} fuera de enum")
+    if isinstance(obj, dict):
+        props = schema.get("properties", {})
+        for k in schema.get("required", []):
+            if k not in obj:
+                raise LLMJSONError("schema", f"falta {path}.{k}")
+        if schema.get("additionalProperties") is False:
+            extra = set(obj) - set(props)
+            if extra:
+                raise LLMJSONError("schema", f"{path} con campos no permitidos: {sorted(extra)}")
+        for k, sub in props.items():
+            if k in obj:
+                validate_schema(obj[k], sub, f"{path}.{k}")
 
 
 async def create(model: str, system: str, messages: list, tools: list | None = None, max_tokens: int = 1200,
@@ -65,17 +121,70 @@ async def create(model: str, system: str, messages: list, tools: list | None = N
     raise last  # type: ignore[misc]
 
 
-async def call_json(model: str, system: str, content: list | str, max_tokens: int = 1500) -> dict:
-    msgs = [{"role": "user", "content": content}]
-    resp = await create(model, system, msgs, max_tokens=max_tokens)
+def _extract_json(resp: Any, schema: dict | None) -> dict:
+    """Convierte la respuesta en dict validado o lanza LLMJSONError con el motivo concreto."""
+    stop = getattr(resp, "stop_reason", None)
     text = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text")
-    try:
-        return parse_json(text)
-    except Exception:
-        log.warning("JSON inválido del modelo: %s", text[:300])
-        # Segundo intento pidiendo solo JSON
-        msgs.append({"role": "assistant", "content": text})
-        msgs.append({"role": "user", "content": "Responde únicamente con el JSON válido, sin texto adicional."})
-        resp = await create(model, system, msgs, max_tokens=max_tokens)
-        text = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text")
-        return parse_json(text)
+    if stop == "refusal":
+        raise LLMJSONError("refusal")
+    if stop == "max_tokens":
+        # El thinking adaptativo consume max_tokens: la salida puede venir vacía o cortada.
+        raise LLMJSONError("max_tokens", f"{len(text)} caracteres de texto")
+    if not text.strip():
+        raise LLMJSONError("empty", f"stop_reason={stop}")
+    obj = parse_json(text)
+    if schema:
+        validate_schema(obj, schema)
+    return obj
+
+
+def _diag(role: str, resp: Any, outcome: str) -> None:
+    """Diagnóstico sin contenido: nunca registra el texto (puede llevar datos de la app)."""
+    usage = getattr(resp, "usage", None)
+    log.info("llm[%s] stop=%s out_tokens=%s req=%s -> %s", role, getattr(resp, "stop_reason", None),
+             getattr(usage, "output_tokens", None), getattr(resp, "_request_id", None), outcome)
+
+
+async def call_json(model: str, system: str, content: list | str, max_tokens: int = 4096,
+                    schema: dict | None = None, retry_max_tokens: int | None = None,
+                    deadline: float | None = None, role: str = "json", min_retry_s: float = 15.0) -> dict:
+    """Pide un objeto JSON. Con `schema` usa structured outputs (output_config.format) y valida en cliente.
+
+    Un único reintento acotado, siempre como petición nueva (sin reenviar texto truncado):
+    - stop_reason=max_tokens -> mismo pedido con `retry_max_tokens` (por defecto el doble).
+    - JSON inválido / esquema / vacío -> mismo pedido con recordatorio de formato.
+    El reintento solo se lanza si queda `min_retry_s` antes de `deadline` (time.monotonic()).
+    """
+    base = [{"type": "text", "text": content}] if isinstance(content, str) else list(content)
+    kw: dict = {}
+    if schema:
+        kw["output_config"] = {"format": {"type": "json_schema", "schema": schema}}
+    budgets = [max_tokens, retry_max_tokens or max_tokens * 2]
+    last: Exception | None = None
+    for attempt, budget in enumerate(budgets):
+        if attempt:
+            if deadline is not None and deadline - time.monotonic() < min_retry_s:
+                log.warning("llm[%s] sin tiempo para reintentar (%s)", role, last)
+                break
+        user = base if attempt == 0 or (isinstance(last, LLMJSONError) and last.reason == "max_tokens") else base + [
+            {"type": "text", "text": "Tu respuesta anterior no fue un JSON válido con el esquema pedido. "
+                                     "Responde únicamente con el objeto JSON, sin texto adicional."}]
+        try:
+            resp = await create(model, system, [{"role": "user", "content": user}], max_tokens=budget, **kw)
+        except anthropic.BadRequestError as e:
+            if not kw:
+                raise
+            # Modelo configurado sin soporte de structured outputs: seguir con JSON por prompt + validación local.
+            log.warning("llm[%s] output_config rechazado (%s); sigo sin structured outputs", role, type(e).__name__)
+            kw = {}
+            last = e
+            continue
+        try:
+            obj = _extract_json(resp, schema)
+        except LLMJSONError as e:
+            _diag(role, resp, f"fallo {e.reason} (intento {attempt + 1})")
+            last = e
+            continue
+        _diag(role, resp, f"ok (intento {attempt + 1})")
+        return obj
+    raise last if last else LLMJSONError("empty")

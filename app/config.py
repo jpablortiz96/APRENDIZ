@@ -31,6 +31,11 @@ VERIFY_DEADLINE = _float("VERIFY_DEADLINE", 262.0)       # último momento para 
 HARD_LIMIT = _float("HARD_LIMIT", 275.0)                 # límite absoluto: se reporta sí o sí
 MAX_STEPS = _int("MAX_STEPS", 45)
 KEEP_IMAGES = _int("KEEP_IMAGES", 4)                     # capturas que se conservan en el historial
+# Salida JSON de roles auxiliares. El thinking adaptativo de los modelos actuales consume max_tokens:
+# con 800 el Verifier podía cortarse (stop_reason=max_tokens) antes de escribir el JSON.
+VERIFIER_MAX_TOKENS = _int("VERIFIER_MAX_TOKENS", 4096)
+VERIFIER_RETRY_MAX_TOKENS = _int("VERIFIER_RETRY_MAX_TOKENS", 8192)
+PLANNER_MAX_TOKENS = _int("PLANNER_MAX_TOKENS", 4096)
 
 VNC_CONNECT_TIMEOUT = _float("VNC_CONNECT_TIMEOUT", 25.0)
 RFB_ENCODINGS = os.environ.get("RFB_ENCODINGS", "zrle,copyrect,raw")  # orden de preferencia

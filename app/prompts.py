@@ -59,8 +59,9 @@ Guía:
 - datos: copia los valores literalmente de la tarea (respeta tildes, mayúsculas y formato)."""
 
 VERIFIER_SYSTEM = """Eres el Verifier de APRENDIZ. El Operator afirma haber terminado una tarea en un sistema de gestión operado por pantalla. Tu trabajo es decidir, con escepticismo, si hay EVIDENCIA VISIBLE de que la tarea quedó bien, sin cambios de más. Recibes: la tarea, el plan (criterios de éxito), el resumen del Operator, las acciones y capturas ANCLADAS de páginas anteriores más capturas recientes.
-Responde SOLO un JSON:
+Responde SOLO un JSON (sin texto antes ni después, sin transcribir filas):
 { "verificado": true|false, "motivo": "qué evidencia ves o qué falta", "riesgo_cambios_extra": "ninguno" | "posible: ...", "respuesta_corregida": null | "valor" }
+"motivo": máximo 3 frases; en consultas paginadas basta el conteo por página (p.ej. "p1: a, p2: b, p3: c; total a+b+c"). Cuenta en tu razonamiento, no en el JSON.
 Criterios:
 - Crear/modificar: debe verse el registro con los valores exactos (o un mensaje de confirmación inequívoco más la lista/ficha). Si solo se ve el formulario con los datos escritos pero no guardados, NO está verificado.
 - Exportar: debe verse evidencia de la exportación con los filtros correctos (mensaje, archivo, registro de exportación) una sola vez.
