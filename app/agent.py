@@ -114,6 +114,8 @@ class _SingleTask:
         self.loop = LoopDetector()
         self.messages: list = []
         self.last_shots: list[bytes] = []
+        # Evidencia anclada: capturas de páginas leídas que no se pierden al podar el historial.
+        self.evidence_shots: list[tuple[int, str, bytes]] = []
         self.done = False
         self._pending_feedback: tuple[str, bytes] | None = None
 
@@ -273,8 +275,18 @@ class _SingleTask:
             note = str(args.get("note", "")).strip()[:300]
             if note:
                 rec.notes.append(note)
-            rec.actions.append(ActionRecord(step, name, {"note": note}))
-            return [{"type": "text", "text": f"Nota guardada. Tiempo restante: {self.fmt_remaining()}."}]
+                # La nota debe ir acompañada de la pantalla que efectivamente ve el operador.
+                # Es una captura en memoria, no una acción de la app, y no modifica datos.
+                if rec.plan.get("tipo") == "consultar":
+                    shot = rfb.screenshot_png()
+                    self.evidence_shots.append((step, note, shot))
+                    # Presupuesto acotado para el Verifier: máximo seis pantallas ancladas.
+                    if len(self.evidence_shots) > 6:
+                        self.evidence_shots.pop(0)
+            rec.actions.append(ActionRecord(step, name, {"note": note}, "conservar evidencia", "lectura"))
+            detail = ("Nota y captura visual conservadas para el Verifier." if note and rec.plan.get("tipo") == "consultar"
+                      else "Nota guardada.")
+            return [{"type": "text", "text": f"{detail} Tiempo restante: {self.fmt_remaining()}."}]
 
         if name == "zoom":
             try:
@@ -426,10 +438,23 @@ class _SingleTask:
             f"TAREA: {rec.tarea}\n\nPLAN: {json.dumps(rec.plan, ensure_ascii=False)}\n\n"
             f"RESUMEN DEL OPERATOR: {resumen}\nRESPUESTA DEL OPERATOR: {respuesta!r}\nEVIDENCIA QUE DICE HABER VISTO: {evidencia}\n\n"
             "ACCIONES EJECUTADAS:\n" + "\n".join(a.short() for a in rec.actions) +
-            "\n\nÚltimas capturas (la última es la actual, tomada ahora mismo):"
+            "\n\nCAPTURAS ANCLADAS EN PASOS ANTERIORES Y CAPTURA ACTUAL. "
+            "Las notas del Operator NO son pruebas por sí solas: lee los datos de cada imagen."
         )
-        content = [{"type": "text", "text": text}] + [llm.image_block(s) for s in self.last_shots[-3:]]
-        return await llm.call_json(config.MODEL_VERIFIER, prompts.VERIFIER_SYSTEM, content, max_tokens=600)
+        content = [{"type": "text", "text": text}]
+        # Fotografías de páginas previas: sobreviven a _prune_images y no dependen de la pantalla final.
+        for step, note, shot in self.evidence_shots:
+            content.extend([
+                {"type": "text", "text": f"CAPTURA ANCLADA en paso {step}. Etiqueta del operador (verificar contra imagen): {note}"},
+                llm.image_block(shot),
+            ])
+        # Capturas actuales: para confirmar el filtro visible y el estado final.
+        for i, shot in enumerate(self.last_shots[-2:]):
+            content.extend([
+                {"type": "text", "text": "CAPTURA ACTUAL (fresca)" if i == len(self.last_shots[-2:]) - 1 else "CAPTURA RECIENTE"},
+                llm.image_block(shot),
+            ])
+        return await llm.call_json(config.MODEL_VERIFIER, prompts.VERIFIER_SYSTEM, content, max_tokens=800)
 
     # ----------------------------------------------------------- cartographer
     async def cartographer(self):

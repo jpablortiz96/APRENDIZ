@@ -1,4 +1,4 @@
-"""
+r"""
 Ciclo de prueba completo contra tu escritorio del reto:
   POST /__reset  ->  POST /tasks (tu agente)  ->  GET /tasks/{id} cada 5 s  ->  POST /__check con el JSON de la prueba
 

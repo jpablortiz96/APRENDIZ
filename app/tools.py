@@ -83,9 +83,9 @@ TOOLS = [
     },
     {
         "name": "remember",
-        "description": "Guarda una nota sobre cómo funciona esta app (dónde está un módulo, cómo se busca, qué popup aparece) para tareas futuras. No cambia nada en la app.",
+        "description": "Guarda una nota. En consultas captura también la pantalla actual como EVIDENCIA para el Verifier; úsalo en CADA página de una lista paginada ANTES de navegar a la siguiente. No cambia datos.",
         "input_schema": {"type": "object", "properties": {
-            "note": {"type": "string", "description": "Nota corta y concreta."}},
+            "note": {"type": "string", "description": "Etiqueta corta y concreta de la evidencia vista en esta pantalla: página, filtros, filas relevantes y exclusiones; sin inventar datos."}},
             "required": ["note"]},
     },
     {
