@@ -1,0 +1,92 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="400" viewBox="0 0 1280 400" role="img" aria-labelledby="t d">
+  <title id="t">APRENDIZ</title>
+  <desc id="d">The AI agent that learns to operate software without an API</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#070B18"/>
+      <stop offset="0.55" stop-color="#0B1430"/>
+      <stop offset="1" stop-color="#160B2E"/>
+    </linearGradient>
+    <linearGradient id="brand" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#2DD4BF"/>
+      <stop offset="1" stop-color="#A78BFA"/>
+    </linearGradient>
+    <radialGradient id="glowT" cx="0.18" cy="0.2" r="0.6">
+      <stop offset="0" stop-color="#2DD4BF" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#2DD4BF" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glowV" cx="0.85" cy="0.85" r="0.6">
+      <stop offset="0" stop-color="#8B5CF6" stop-opacity="0.25"/>
+      <stop offset="1" stop-color="#8B5CF6" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M32 0H0V32" fill="none" stroke="#1E293B" stroke-width="1"/>
+    </pattern>
+  </defs>
+
+  <rect width="1280" height="400" rx="24" fill="#0A1024"/>
+  <clipPath id="frame"><rect width="1280" height="400" rx="24"/></clipPath>
+  <g clip-path="url(#frame)">
+    <circle cx="190" cy="40" r="260" fill="#2DD4BF" opacity="0.07"/>
+    <circle cx="1180" cy="380" r="300" fill="#8B5CF6" opacity="0.10"/>
+  </g>
+  <g stroke="#1E293B" stroke-width="1" opacity="0.6">
+    <line x1="0" y1="128" x2="1280" y2="128"/><line x1="0" y1="256" x2="1280" y2="256"/>
+    <line x1="320" y1="0" x2="320" y2="400"/><line x1="640" y1="0" x2="640" y2="400"/><line x1="960" y1="0" x2="960" y2="400"/>
+  </g>
+
+  <!-- Texto principal -->
+  <g font-family="'Segoe UI', 'Helvetica Neue', Arial, sans-serif">
+    <text x="72" y="92" fill="#5EEAD4" font-size="18" letter-spacing="5" font-weight="600">FRONTIER HACKATHON · RETO 1</text>
+    <text x="68" y="196" font-size="112" font-weight="800" letter-spacing="6"><tspan fill="#2DD4BF">APREN</tspan><tspan fill="#A78BFA">DIZ</tspan></text>
+    <text x="72" y="248" fill="#E2E8F0" font-size="28" font-weight="500">The AI agent that learns to operate software without an API</text>
+    <text x="72" y="286" fill="#94A3B8" font-size="20">El agente que aprende a operar software sin API · visión + VNC propio + verificación con evidencia</text>
+    <g font-size="15" font-weight="600">
+      <rect x="72" y="318" width="132" height="34" rx="17" fill="#0F2A2E" stroke="#2DD4BF" stroke-opacity="0.6"/>
+      <text x="138" y="340" fill="#5EEAD4" text-anchor="middle">PLAN</text>
+      <rect x="216" y="318" width="132" height="34" rx="17" fill="#0F2A2E" stroke="#2DD4BF" stroke-opacity="0.6"/>
+      <text x="282" y="340" fill="#5EEAD4" text-anchor="middle">OPERATE</text>
+      <rect x="360" y="318" width="132" height="34" rx="17" fill="#1E1538" stroke="#A78BFA" stroke-opacity="0.7"/>
+      <text x="426" y="340" fill="#C4B5FD" text-anchor="middle">VERIFY</text>
+      <rect x="504" y="318" width="132" height="34" rx="17" fill="#1E1538" stroke="#A78BFA" stroke-opacity="0.7"/>
+      <text x="570" y="340" fill="#C4B5FD" text-anchor="middle">GUARD</text>
+      <rect x="648" y="318" width="132" height="34" rx="17" fill="#1E1538" stroke="#A78BFA" stroke-opacity="0.7"/>
+      <text x="714" y="340" fill="#C4B5FD" text-anchor="middle">LEARN</text>
+    </g>
+  </g>
+
+  <!-- Ventana legacy estilizada -->
+  <g transform="translate(900 70)">
+    <rect width="320" height="236" rx="14" fill="#0B1222" stroke="#334155" stroke-width="1.5"/>
+    <rect width="320" height="34" rx="14" fill="#111C33"/>
+    <rect y="20" width="320" height="14" fill="#111C33"/>
+    <circle cx="20" cy="17" r="5" fill="#F87171"/>
+    <circle cx="38" cy="17" r="5" fill="#FBBF24"/>
+    <circle cx="56" cy="17" r="5" fill="#34D399"/>
+    <rect x="80" y="11" width="150" height="12" rx="6" fill="#1E293B"/>
+    <g fill="#1E293B">
+      <rect x="20" y="52" width="120" height="12" rx="4"/>
+      <rect x="20" y="76" width="280" height="22" rx="5" fill="#16213A" stroke="#2DD4BF" stroke-opacity="0.35"/>
+      <rect x="20" y="108" width="280" height="22" rx="5" fill="#16213A"/>
+      <rect x="20" y="140" width="280" height="22" rx="5" fill="#16213A"/>
+    </g>
+    <rect x="196" y="182" width="104" height="32" rx="8" fill="#2DD4BF"/>
+    <text x="248" y="203" fill="#0B1020" font-family="'Segoe UI', Arial, sans-serif" font-size="14" font-weight="700" text-anchor="middle">Aplicar</text>
+    <!-- Retícula de grounding sobre el botón -->
+    <g stroke="#2DD4BF" stroke-width="2" fill="none">
+      <path d="M186 172h12M186 172v12"/>
+      <path d="M310 172h-12M310 172v12"/>
+      <path d="M186 224h12M186 224v-12"/>
+      <path d="M310 224h-12M310 224v-12"/>
+    </g>
+    <!-- Cursor -->
+    <path d="M286 206l0 30 8-8 6 13 6-3-6-12 11 0z" fill="#F8FAFC" stroke="#0B1020" stroke-width="1.5"/>
+  </g>
+
+  <!-- Traza de verificación -->
+  <g font-family="ui-monospace, 'Cascadia Code', Consolas, monospace" font-size="13">
+    <rect x="900" y="322" width="320" height="40" rx="10" fill="#0F172A" stroke="#334155"/>
+    <text x="916" y="347" fill="#5EEAD4">✓ verified</text>
+    <text x="1004" y="347" fill="#94A3B8">evidence · no duplicates</text>
+  </g>
+</svg>

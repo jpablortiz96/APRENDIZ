@@ -314,3 +314,21 @@ python scripts\probar.py material\pruebas\E5-homonimos.json
   - Aclaración en el prompt: el riesgo se refiere a cambios *ejecutados*.
 - **E3:** el límite de gasto de la cuenta de Anthropic **no es una regresión del código**. El agente actuó fail-closed: `fallida`, sin falso éxito, `__check.pass=true`.
 - **Métricas reales** (`evento=fin`, E2 en `47989e8`): planner 7,6 s; operator 48,5 s en 17 pasos; verifier 8,6 s en 2 rondas; conexión VNC 1,0 s. Tokens: `input` 10 825, `output` 4 761, `cache_read` 147 604, `cache_creation` 129 754.
+
+### Cierre de la validación (5/5 sobre v0.2.1)
+
+**Procedencia comprobada en los logs de Railway:**
+- Los PASS de E3, E4 y E5 de las 22:16–22:19 se ejecutaron contra **producción (v0.1.3)**, no contra staging.
+- Por eso se repitieron contra staging, en el **mismo deployment** (22:04:25, código `53d7b99`) donde pasaron E1 y E2:
+
+| Prueba | Estado | Tiempo cliente | `__check.pass` |
+|---|---|---|---|
+| E1 | terminada | 84 s | true |
+| E2 | terminada | 55 s | true |
+| E3 | terminada, `respuesta: 45` | 51 s | true |
+| E4 | terminada | 54 s | true |
+| E5 | fallida (esperado) | 31 s | true |
+
+**Observación sobre el contrato:** en E4, `POST /tasks` midió 2,92 s desde el cliente; el resto de mediciones de la sesión quedaron entre 0,35 y 1,67 s. El handler no hace E/S (solo crea la tarea asyncio), así que se atribuye a la red o al proxy. Queda como riesgo a vigilar.
+
+**Dependencia de Anthropic:** en los logs de producción entre las 20:24 y las 21:00 hay 60 tareas de otra aplicación. Desde las 20:54 la API respondió «credit balance is too low» y esas tareas terminaron `fallida` en ~2 s. Más tarde, staging recibió «usage limits» (límite de gasto). En los dos casos el agente fue fail-closed. No se sabe a qué evaluación corresponden esas tareas.
