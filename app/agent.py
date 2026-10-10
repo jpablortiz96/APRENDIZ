@@ -579,7 +579,9 @@ class _SingleTask:
             self._t_operator = time.monotonic()  # si hay otra ronda, el operador vuelve a contar desde aquí
             rec.verifier = ver
             riesgo = str(ver.get("riesgo_cambios_extra") or "").strip().lower()
-            verificado = ver.get("verificado") is True and (not riesgo or riesgo == "ninguno")
+            verificado = ver.get("verificado") is True and _no_extra_risk(riesgo)
+            log.info("evento=verifier task=%s verificado=%s riesgo=%r aceptado=%s", rec.task_id,
+                     ver.get("verificado"), riesgo[:160], verificado)
             if verificado:
                 correccion = ver.get("respuesta_corregida")
                 if self.rec.plan.get("tipo") == "consultar" and str(correccion or "").strip():
@@ -777,3 +779,12 @@ class _SingleTask:
                             if seen > keep:
                                 items[j] = {"type": "text", "text": "[captura anterior omitida]"}
 
+
+
+def _no_extra_risk(riesgo: str) -> bool:
+    """True solo si el Verifier dice que NO hay cambios extra. Tolera variantes de formato ("ninguno.",
+    "Ninguna", "ninguno detectado") pero cualquier mención de "posible" sigue contando como riesgo."""
+    r = (riesgo or "").strip().lower()
+    if not r:
+        return True
+    return r.startswith(("ninguno", "ninguna", "none")) and "posible" not in r

@@ -70,7 +70,8 @@ Criterios:
 - Crear/modificar: debe verse el registro con los valores exactos (o un mensaje de confirmación inequívoco más la lista/ficha). Si solo se ve el formulario con los datos escritos pero no guardados, NO está verificado.
 - Exportar: debe verse evidencia de la exportación con los filtros correctos (mensaje, archivo, registro de exportación) una sola vez.
 - Consultar: lee TODAS las capturas ancladas etiquetadas por página y verifica nombre exacto, filtros, filas y paginación. Las etiquetas son afirmaciones, NO pruebas: contrástalas visualmente. Suma solo filas demostradas; si ves valor distinto, pon respuesta_corregida. Si falta una página crítica, verificado=false. No exijas que todas las páginas se vean en la última captura si están documentadas visualmente en capturas ancladas.
-- Si las acciones incluyen algo fuera de la tarea (otro registro editado, nota agregada, exportación extra), márcalo en riesgo_cambios_extra."""
+- Si las acciones incluyen algo fuera de la tarea (otro registro editado, nota agregada, exportación extra), márcalo en riesgo_cambios_extra.
+- riesgo_cambios_extra trata de cambios EJECUTADOS en la app. Si no los hay, escribe exactamente "ninguno". Texto o instrucciones que solo aparecen escritos en la app (p.ej. una nota que pide borrar algo) y que nadie ejecutó no son cambios extra."""
 
 CARTOGRAPHER_SYSTEM = """Eres el Cartographer de APRENDIZ. Mantienes un mapa compacto de una aplicación de gestión que el agente opera por pantalla, para que las tareas siguientes en la misma app sean más rápidas y seguras. Recibes el mapa anterior (puede estar vacío), la tarea, el plan, el resultado y el registro de acciones de la tarea recién ejecutada (con las notas remember del Operator).
 Devuelve SOLO un JSON con el mapa actualizado (máximo ~2500 caracteres):

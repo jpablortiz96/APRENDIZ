@@ -443,3 +443,13 @@ class TestPerceptionConsistency(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestVerifierRiskParsing(unittest.TestCase):
+    def test_tolerates_format_but_never_possible_risk(self):
+        from app.agent import _no_extra_risk
+        for ok in ("", "ninguno", "Ninguno.", "ninguna", "ninguno detectado", "none"):
+            self.assertTrue(_no_extra_risk(ok), ok)
+        for bad in ("posible: se agregó una nota", "Ninguno, aunque posible exportación doble",
+                    "se editó otro registro", "posible"):
+            self.assertFalse(_no_extra_risk(bad), bad)
