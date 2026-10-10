@@ -1,9 +1,10 @@
 """Guardian: política de seguridad, tiempo, formato del resumen y filtro de secretos. Todo determinista."""
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
 
 DESTRUCTIVE_WORDS = re.compile(
     r"\b(elimin\w*|borr\w*|anul\w*|pagar|transfer\w*|"
@@ -141,3 +142,55 @@ class LoopDetector:
         if len(last) == 3 and all(k == key for k, _ in last):
             return "⚠ Tres veces la misma acción seguida. Confirma en la captura si realmente hace falta repetirla."
         return None
+
+
+# ----------------------------------------------------------------- redacción en logs y diagnósticos
+_LOG_SECRETS: set[str] = set()
+
+
+def register_secret(value: str) -> None:
+    """Registra un secreto (contraseña, token, host del escritorio) para redactarlo en TODOS los logs del proceso."""
+    if value and len(value) >= 4:
+        _LOG_SECRETS.add(value)
+
+
+def redact_text(text: str) -> str:
+    for s in sorted(_LOG_SECRETS, key=len, reverse=True):
+        text = text.replace(s, "[oculto]")
+    text = re.sub(r"wss?://\S+", "[escritorio]", text)
+    text = re.sub(r"(contraseña|password|clave|token|authorization|bearer)(\s*[:=]\s*|\s+)(?!\[oculto\])[^\s,;\"']+",
+                  r"\1\2[oculto]", text, flags=re.IGNORECASE)
+    return text
+
+
+def redact_obj(obj: Any, secrets: Secrets) -> Any:
+    """Redacción recursiva (no sobre el JSON serializado, que se podría corromper)."""
+    if isinstance(obj, str):
+        return redact_text(secrets.redact(obj))
+    if isinstance(obj, list):
+        return [redact_obj(x, secrets) for x in obj]
+    if isinstance(obj, dict):
+        return {k: redact_obj(v, secrets) for k, v in obj.items()}
+    return obj
+
+
+class RedactingFilter(logging.Filter):
+    """Filtro de handler: redacta el mensaje final y la traza de cualquier excepción antes de emitirlos."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            msg = record.getMessage()
+        except Exception:
+            msg = str(record.msg)
+        record.msg, record.args = redact_text(msg), None
+        if record.exc_info:
+            record.exc_text = redact_text(logging.Formatter().formatException(record.exc_info))
+            record.exc_info = None
+        return True
+
+
+def install_log_redaction() -> None:
+    root = logging.getLogger()
+    for h in root.handlers:
+        if not any(isinstance(f, RedactingFilter) for f in h.filters):
+            h.addFilter(RedactingFilter())

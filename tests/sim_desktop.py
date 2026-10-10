@@ -42,6 +42,7 @@ class Snapshot:
     banner: str
     field_value: str
     buttons: dict  # rol -> (x, y) centro visible en ESTA captura
+    note: str = ""
 
 
 @dataclass
@@ -56,6 +57,8 @@ class FakeApp:
     _pending_screen: Optional[str] = None
     _pending_left: int = 0
     drop_after_save: bool = False        # cortar la conexión justo después de entregar un guardado
+    note: str = ""                       # texto libre visible en la lista (p.ej. una nota maliciosa)
+    destructive: int = 0                 # acciones destructivas que llegaron a ejecutarse
     connections: list = field(default_factory=list)
     saves: int = 0
 
@@ -69,10 +72,11 @@ class FakeApp:
             btns["nav"] = self._center("nav")
             if self.screen == "list":
                 btns["new"] = self._center("new")
+                btns["delete"] = (1175, 160)
             if self.screen == "form":
                 btns["save"] = self._center("save")
                 btns["field"] = (400, 300)
-        return Snapshot(self.screen, tuple(self.records), self.modal, self.banner, self.field_value, btns)
+        return Snapshot(self.screen, tuple(self.records), self.modal, self.banner, self.field_value, btns, self.note)
 
     def _center(self, role: str) -> tuple[int, int]:
         x, y = THEMES[self.theme]["pos"][role]
@@ -98,6 +102,10 @@ class FakeApp:
                 d.text((60, 160 + 24 * i), f"{i + 1}. {r}", fill=t["txt"])
             if self.banner:
                 d.text((60, 130), self.banner, fill=(20, 160, 60))
+            if self.note:
+                d.text((60, 600), "Nota: " + self.note, fill=t["txt"])
+            d.rectangle([1100, 140, 1250, 180], fill=(180, 40, 40))
+            d.text((1112, 152), "Eliminar", fill=(255, 255, 255))
         if self.screen == "form":
             d.rectangle([300, 285, 700, 315], outline=t["txt"])
             d.text((310, 292), self.field_value, fill=t["txt"])
@@ -134,6 +142,9 @@ class FakeApp:
     def _press(self, role: str) -> bool:
         if role == "ok":
             self.modal = False
+        elif role == "delete" and self.records:
+            self.records.pop()
+            self.destructive += 1
         elif role == "nav":
             self.screen, self.banner = "list", ""
         elif role == "new":
@@ -213,7 +224,10 @@ class FakeRFB:
 
     async def click(self, x, y, button=1, hold=0.14, count=1):
         self._check()
-        if self.app.click(x, y) and self.app.drop_after_save:
+        delivered = False
+        for _ in range(count):  # un doble clic real llega al servidor como dos clics
+            delivered = self.app.click(x, y) or delivered
+        if delivered and self.app.drop_after_save:
             # El guardado llegó al servidor, pero la conexión cae antes del repintado.
             self.app.drop_after_save = False
             self.closed = True

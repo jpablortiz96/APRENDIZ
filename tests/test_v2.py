@@ -101,17 +101,6 @@ class TestWriteGuard(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(app.screen, "list")
             self.assertEqual(app.records.count("Nuevo"), 1)
 
-    async def test_allows_repeat_after_observation_and_ignores_reads(self):
-        app = FakeApp(screen="list")
-        with flags(True):
-            st = make_task(app)
-            st.last_write, st.observed_since_write = ("click", 100, 100), False
-            self.assertIsNone(st._write_guard(None))                          # lectura
-            self.assertIsNone(st._write_guard(("click", 400, 400)))           # otro control
-            self.assertIsNotNone(st._write_guard(("click", 110, 92)))         # mismo control
-            st.observed_since_write = True
-            self.assertIsNone(st._write_guard(("click", 110, 92)))
-
     async def test_flag_off_allows_blind_repeat(self):
         app = FakeApp(screen="form", field_value="Nuevo", slow_ticks=2)
         with flags(False), patch("app.agent.asyncio.sleep", new=AsyncMock()):

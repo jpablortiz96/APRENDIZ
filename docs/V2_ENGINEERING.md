@@ -36,7 +36,7 @@ POST /tasks ──► TaskRunner.submit ──► asyncio.Task(_run_guarded, HAR
 |---|----------|------|-----------|
 | 1 | El Cartographer guarda **coordenadas** en el mapa de la app y el Operator las recibe como pista. Tras un rediseño, esas coordenadas apuntan a otro sitio. | D | `prompts.CARTOGRAPHER_SYSTEM`, ejemplo `(x≈104,y≈44)`; benchmark `rediseño_modal` v0.1.3: 1 clic en el vacío |
 | 2 | El mapa se reutiliza sin saber en qué UI se validó ni si funcionó; no hay confianza ni invalidación. | D | `memory.get()` devuelve el mapa tal cual |
-| 3 | `MODEL_CARTOGRAPHER` por defecto `claude-haiku-5-5` no es un ID válido, así que el mapa nunca se guardaba (salvo que la variable de entorno lo sobrescriba). | D | `config.py`; lista de modelos vigente |
+| 3 | ~~`claude-haiku-5-5` no es un ID válido~~ **RETIRADO en v0.2.1: era un error.** La documentación vigente de Anthropic lista Claude Haiku 5.5 (`claude-haiku-5-5`); mi tabla de referencia tenía caché anterior a su lanzamiento. Se restauró el default original. | — | docs.claude.com, Models overview (consultado el 10-oct-2026) |
 | 4 | Si cae la conexión VNC no hay reconexión: el resto de acciones falla y **el Verifier puede juzgar un framebuffer congelado** como si fuera la «captura fresca». | D | `_execute`/`_handle_done` sin comprobar `rfb.closed`; benchmark `corte_vnc` v0.1.3: `fallida` aunque la app quedó bien |
 | 5 | Una acción de guardado repetida a ciegas (pantalla lenta, «SIN cambio visible») duplica registros. `LoopDetector` solo avisa a la 3.ª repetición y no bloquea. | D | `guardian.LoopDetector`; benchmark `guardado_lento` v0.1.3: 1 duplicado y **falso éxito** |
 | 6 | Se envían capturas idénticas píxel a píxel (esperas, acciones sin efecto): tokens sin información nueva. | D | benchmark `carga_lenta`: 22 frente a 16 imágenes |
@@ -63,7 +63,7 @@ Los logs no imprimen secretos: `Secrets.redact` filtra el resumen, la URL del es
 | `RECOVERY_V2` | **Recuperación segura**: reconexión VNC acotada y guarda anti-duplicados para escrituras no idempotentes | 4, 5 | Un duplicado o un falso éxito anula la tarea |
 | `PERCEPTION_V2` | **Percepción e inferencia**: no reenviar capturas idénticas + caché incremental del historial | 6, 7 | Coste y latencia por paso, sin tocar la precisión |
 
-Además, sin flag: Pillow 13 (8), ID del Cartographer (3) y reglas de prompt contra la inyección (12) y sobre modales inesperados.
+Además, sin flag: Pillow 13 (8) y reglas de prompt contra la inyección (12) y sobre modales inesperados.
 
 Quedan **fuera**, como propuestas futuras (ver «Riesgos pendientes»): persistencia de tareas, bloqueo por escritorio y selección de modelo por complejidad. Necesitan más cambio o una medición en producción que hoy no tenemos.
 
@@ -177,7 +177,7 @@ POST /tasks ─► run ─► conectar ─► captura + ui_signature ─► Plan
 
 | Archivo | Cambio |
 |---------|--------|
-| `app/config.py` | Flags `MEMORY_V2`, `RECOVERY_V2`, `PERCEPTION_V2`, `VNC_RECONNECTS`; ID válido del Cartographer |
+| `app/config.py` | Flags `MEMORY_V2`, `RECOVERY_V2`, `PERCEPTION_V2`, `VNC_RECONNECTS` |
 | `app/memory.py` | Coordenadas eliminadas, firma y distancia de UI, `context()`, `record_outcome()` |
 | `app/agent.py` | Integración de los tres flags, `_reconnect`, `_recover_connection`, `_write_guard`, `_screen_blocks`, `_make_rfb` |
 | `app/llm.py` | `cache_messages` → `cache_control` a nivel de petición |
@@ -192,14 +192,13 @@ POST /tasks ─► run ─► conectar ─► captura + ui_signature ─► Plan
 2. El umbral de drift (0,18) está calibrado con UIs sintéticas. En una UI real, un cambio de pantalla inicial (otra vista tras el reset) podría marcar drift falso. Consecuencia: el mapa se presenta como «desactualizado». Es conservador, nunca bloquea.
 3. La guarda depende de `risk=cambio_esperado` (hallazgo 15).
 4. Tareas en memoria y sin bloqueo por escritorio (hallazgos 9, 10): **no desplegar durante la evaluación**.
-5. Confirmar en Railway que `MODEL_CARTOGRAPHER` no está fijado a un ID inválido.
 6. Futuro: no codificar el PNG cuando el frame es idéntico (hallazgo 14). Persistencia ligera de tareas en `data/`. Bloqueo por URL de escritorio. Selección de modelo por complejidad, solo con medición.
 
 ## Rollback
 
 - **Por mejora, sin código**: en Railway, Variables → `MEMORY_V2=0`, `RECOVERY_V2=0` o `PERCEPTION_V2=0` → redeploy. Con los tres a 0, el arnés (memoria, Cartographer, reconexión, guarda, capturas y caché) se comporta como en v0.1.3. Lo cubren los tests con flags OFF. Las reglas nuevas del prompt del Operator (grounding por función, modales, anti-inyección) no dependen de ningún flag: para quitarlas hay que hacer el rollback total.
 - **Total**: Railway → Deployments → el deployment de `98b34ff` → *Redeploy*. O bien `git revert <merge>` en `main` y push.
-- Los fixes sin flag (Pillow, ID del Cartographer, reglas de prompt) son compatibles hacia atrás.
+- Los fixes sin flag (Pillow, reglas de prompt, redacción de logs, slots por escritorio) son compatibles hacia atrás.
 
 ## Comprobar y desplegar (con aprobación)
 
@@ -242,3 +241,49 @@ python scripts\probar.py material\pruebas\E5-homonimos.json
    - Explicamos qué **no** mide.
    - Encontramos un bug de producción latente (Pillow 13, en 5 días) gracias a ejecutar los tests con warnings como error.
 6. **(1 min) Límites honestos.** La visión de Claude sobre la app oculta sigue siendo la variable dominante. La validamos en el escritorio de práctica, nunca gastando las corridas ocultas.
+
+
+---
+
+# v0.2.1: Release gate
+
+## Cambios
+
+| Tarea | Implementación | Archivos |
+|-------|----------------|----------|
+| 1. Concurrencia | `DesktopSlots`: exclusión mutua por escritorio (host+ruta normalizados), comprobación y asignación atómicas en asyncio, espera por sondeo con plazo. Si una tarea en cola agota su tiempo útil (`OPERATOR_DEADLINE − 40 s` desde el POST), **no llega a conectarse**. `HARD_LIMIT` incluye el tiempo en cola. El slot se libera en `finally` (excepción, timeout o cancelación) y solo puede liberarlo su dueño. Ninguna acción se ejecuta después de `OPERATOR_DEADLINE`. | `app/agent.py` |
+| 2. Duplicados | `app/commit_guard.py`. Clasifica las confirmaciones por herramienta, tecla de envío, verbo en `why` (es/en), `risk`, tipo de tarea y acción previa (Enter tras escribir), así que **ya no depende solo de `risk`**. Tras una confirmación, el resultado queda incierto: **esperar o hacer zoom no desbloquea**. Hace falta progreso real (un dato nuevo escrito o una navegación con cambio visible). Un `double_click` sobre una confirmación se ejecuta como clic simple. Un corte de conexión durante el envío marca la operación como incierta. | `app/commit_guard.py`, `app/agent.py` |
+| 3. Seguridad y observabilidad | `redact_obj` recursivo antes de escribir `data/logs/*.json` y en `?debug=1`. `RedactingFilter` en los handlers raíz redacta mensajes **y trazas** (contraseña, token del equipo, API key, host del escritorio, `wss://`, `password=`, `Bearer`). Logs `evento=fase task=… fase=… ms=…` y `evento=fin task=… {métricas}`. Métricas: duración de espera, conexión VNC, planner, operator, verifier y reconexión; pasos; llamadas LLM por rol; reintentos de API y de JSON; tokens de entrada, salida, `cache_read` y `cache_creation`; reconexiones; bloqueos. `DEBUG_API=0` por defecto. | `app/guardian.py`, `app/llm.py`, `app/main.py`, `app/agent.py` |
+| 4. Percepción | Contrato real del SDK 1.13.0 verificado con `httpx2.MockTransport`: el SDK serializa `cache_control` a nivel de petición, `system[].cache_control` y `output_config.format`, y expone `cache_read_input_tokens` y `cache_creation_input_tokens`, que se contabilizan. El PNG no se recodifica si el framebuffer no cambió (md5 ~15 ms frente a PNG ~100–335 ms). Test de poda: pares `tool_use`/`tool_result` intactos y como máximo `KEEP_IMAGES` imágenes. Sin cambios de calidad ni de modelos. | `app/agent.py`, `tests/test_v21.py` |
+| 5. Adaptabilidad | Escenarios nuevos en el benchmark: `riesgo_mal_clasificado`, `doble_clic_guardar` y `nota_maliciosa`, además de los de v0.2.0 (rediseño con modal y mapa viejo con coordenadas, corte VNC, carga lenta). | `scripts/bench.py`, `tests/sim_desktop.py` |
+| Modelo | `MODEL_CARTOGRAPHER` vuelve a `claude-haiku-5-5`, verificado en la documentación vigente. | `app/config.py` |
+
+## Validación (local, 10-oct-2026)
+
+- `python -W error::DeprecationWarning -m unittest discover -s tests`: **63/63 OK**.
+- Compilación OK. `pip check`: sin conflictos en las dependencias del proyecto; los avisos son de `opentelemetry`, ajeno al repo.
+- Smoke del contrato FastAPI:
+  - `/health` 200 con las mismas claves; `GET /tasks/{id}` → `estado`, `resumen`.
+  - 401 sin token o con token malo; 404 si la tarea no existe.
+  - `?debug=1` no expone nada con `DEBUG_API=0`.
+  - `POST /tasks`: p50 33 ms, p95 170 ms, máx 177 ms (20 tareas encoladas sobre el mismo escritorio).
+  - **0 fugas** de contraseña, token, API key o host en 113 líneas de log reales.
+- Benchmark A/B (determinista, 8 escenarios):
+
+| | v0.1.3 | v0.2.1 |
+|---|---|---|
+| Correctas | 4/8 | **8/8** |
+| Falsos éxitos | 3 | **0** |
+| Duplicados | 5 | **0** |
+| Acciones indebidas | 0 | 0 (el Guardian ya bloqueaba la nota maliciosa) |
+| Pasos | 51 | 51 |
+| Tokens de imagen (est.) | 210 210 | 202 020 (−3,9 %) |
+| KB de historial sin caché (est.) | 6 797 | 3 044 (−55 %) |
+
+**No ejecutado:** E1–E5 reales contra la nueva versión. No hay un entorno staging de Railway accesible desde esta sesión (el CLI no está enlazado) y la ejecución de `probar.py` contra el escritorio quedó bloqueada por permisos en una sesión anterior. **Los tests sintéticos no sustituyen a E1–E5.**
+
+## Rollback a 98b34ff
+
+- **Sin código**: Railway → Deployments → deployment de `98b34ff` → *Redeploy*.
+- **Por flags**: `MEMORY_V2=0`, `RECOVERY_V2=0`, `PERCEPTION_V2=0`. Desactivan memoria v2, guarda y reconexión, y percepción y caché. Los slots por escritorio y la redacción de logs no tienen flag porque son puramente defensivos.
+- **Git**: `main` sigue en `98b34ff` mientras no se haga merge.

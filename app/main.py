@@ -19,11 +19,15 @@ from pydantic import BaseModel, Field
 
 from . import config
 from .agent import TaskRunner
+from .guardian import install_log_redaction, register_secret
 from .memory import AppMemory
 
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"),
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("aprendiz.main")
+install_log_redaction()
+register_secret(config.TEAM_TOKEN)
+register_secret(config.ANTHROPIC_API_KEY)
 
 app = FastAPI(title="APRENDIZ · el agente que opera lo que no tiene API", version="1.0")
 memory = AppMemory()
@@ -87,7 +91,7 @@ async def get_task(task_id: str, debug: int = 0):
     if rec is None:
         raise HTTPException(status_code=404, detail="task_id desconocido")
     if debug and config.DEBUG_API:
-        return rec.debug()
+        return rec.debug_safe()
     return rec.public()
 
 

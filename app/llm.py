@@ -5,6 +5,7 @@ import asyncio
 import base64
 import json
 import logging
+import contextvars
 import re
 import time
 from typing import Any
@@ -16,6 +17,34 @@ from . import config
 log = logging.getLogger("aprendiz.llm")
 
 _client: anthropic.AsyncAnthropic | None = None
+
+# Métricas por tarea: el agente fija un dict nuevo al empezar; las subtareas asyncio heredan la referencia.
+METRICS: contextvars.ContextVar[dict | None] = contextvars.ContextVar("aprendiz_llm_metrics", default=None)
+_USAGE_FIELDS = ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
+
+
+def new_metrics() -> dict:
+    return {"llamadas": {}, "ms": {}, "reintentos_api": 0, "reintentos_json": 0,
+            "tokens": {f: 0 for f in _USAGE_FIELDS}}
+
+
+def _account(role: str, resp: Any, ms: float) -> None:
+    m = METRICS.get()
+    if m is None:
+        return
+    m["llamadas"][role] = m["llamadas"].get(role, 0) + 1
+    m["ms"][role] = round(m["ms"].get(role, 0) + ms)
+    usage = getattr(resp, "usage", None)
+    for f in _USAGE_FIELDS:
+        v = getattr(usage, f, None)
+        if isinstance(v, int):
+            m["tokens"][f] += v
+
+
+def _bump(counter: str) -> None:
+    m = METRICS.get()
+    if m is not None:
+        m[counter] += 1
 
 
 def client() -> anthropic.AsyncAnthropic:
@@ -99,9 +128,11 @@ def validate_schema(obj: Any, schema: dict, path: str = "$") -> None:
 
 
 async def create(model: str, system: str, messages: list, tools: list | None = None, max_tokens: int = 1200,
-                 attempts: int = 3, cache_messages: bool = False, **kw) -> Any:
+                 attempts: int = 3, cache_messages: bool = False, role: str = "operator", **kw) -> Any:
     last = None
     for i in range(attempts):
+        if i:
+            _bump("reintentos_api")
         try:
             params = dict(model=model, max_tokens=max_tokens,
                           system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
@@ -112,7 +143,10 @@ async def create(model: str, system: str, messages: list, tools: list | None = N
                 # Caché automática del último bloque: cada paso del Operator reutiliza el historial previo
                 # hasta la primera captura podada, en lugar de pagarlo entero otra vez.
                 params["cache_control"] = {"type": "ephemeral"}
-            return await client().messages.create(**params)
+            t0 = time.monotonic()
+            resp = await client().messages.create(**params)
+            _account(role, resp, (time.monotonic() - t0) * 1000)
+            return resp
         except (anthropic.RateLimitError, anthropic.InternalServerError, anthropic.APIConnectionError,
                 anthropic.APITimeoutError) as e:
             last = e
@@ -174,7 +208,9 @@ async def call_json(model: str, system: str, content: list | str, max_tokens: in
             {"type": "text", "text": "Tu respuesta anterior no fue un JSON válido con el esquema pedido. "
                                      "Responde únicamente con el objeto JSON, sin texto adicional."}]
         try:
-            resp = await create(model, system, [{"role": "user", "content": user}], max_tokens=budget, **kw)
+            if attempt:
+                _bump("reintentos_json")
+            resp = await create(model, system, [{"role": "user", "content": user}], max_tokens=budget, role=role, **kw)
         except anthropic.BadRequestError as e:
             if not kw:
                 raise

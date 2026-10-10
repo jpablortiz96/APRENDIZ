@@ -14,7 +14,8 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from . import config, llm, prompts
-from .guardian import ActionRecord, LoopDetector, Secrets, check_action, format_summary
+from .commit_guard import CommitGuard, commit_key, is_commit
+from .guardian import ActionRecord, LoopDetector, Secrets, check_action, format_summary, redact_obj, register_secret
 from .memory import AppMemory, ui_signature
 from .rfb import RFBClient, RFBError
 from .tools import ACTION_TOOLS, TOOLS
@@ -22,7 +23,7 @@ from .tools import ACTION_TOOLS, TOOLS
 log = logging.getLogger("aprendiz.agent")
 
 CHANGE_AREA = 2500  # px² repintados para considerar que la pantalla cambió (ignora el cursor del ratón)
-WRITE_TOLERANCE_PX = 15  # dos clics de cambio a menos de esta distancia se consideran "la misma acción"
+MIN_USEFUL_S = 40   # una tarea que obtiene el escritorio con menos tiempo útil que esto no empieza a operar
 
 VERIFIER_SCHEMA = {
     "type": "object",
@@ -54,6 +55,8 @@ class TaskRecord:
     error: str = ""
     app_name: str = ""
     worker: Optional[asyncio.Task] = None
+    metrics: dict = field(default_factory=dict)
+    secrets: Optional[Secrets] = field(default=None, repr=False)
 
     def public(self) -> dict:
         return {"estado": self.estado, "resumen": self.resumen}
@@ -71,13 +74,50 @@ class TaskRecord:
             "notas": self.notes,
             "verifier": self.verifier,
             "error": self.error,
+            "metricas": self.metrics,
         }
+
+    def debug_safe(self) -> dict:
+        """Diagnóstico apto para disco o ?debug=1: contraseña, token y host del escritorio redactados."""
+        return redact_obj(self.debug(), self.secrets or Secrets())
+
+
+def desktop_key(url: str) -> str:
+    """Identidad de la sesión VNC: esquema-agnóstica, sin query ni barra final."""
+    u = url.split("://", 1)[-1].split("?", 1)[0].rstrip("/").lower()
+    return u
+
+
+class DesktopSlots:
+    """Exclusión mutua por escritorio dentro del proceso: dos tareas nunca operan la misma sesión VNC a la vez.
+
+    Check-and-set sin await intermedio (atómico en asyncio); la espera es por sondeo con plazo, así una tarea
+    que agota su presupuesto esperando nunca llega a tocar el escritorio.
+    """
+
+    def __init__(self):
+        self.busy: dict[str, str] = {}
+
+    async def acquire(self, key: str, owner: str, deadline: float) -> bool:
+        while True:
+            if key not in self.busy:
+                self.busy[key] = owner
+                return True
+            now = time.monotonic()
+            if now >= deadline:
+                return False
+            await asyncio.sleep(min(0.25, deadline - now))
+
+    def release(self, key: str, owner: str) -> None:
+        if self.busy.get(key) == owner:
+            del self.busy[key]
 
 
 class TaskRunner:
     def __init__(self, memory: AppMemory):
         self.memory = memory
         self.tasks: dict[str, TaskRecord] = {}
+        self.slots = DesktopSlots()
 
     def submit(self, tarea: str, url: str, password: str) -> TaskRecord:
         rec = TaskRecord(task_id=uuid.uuid4().hex[:12], tarea=tarea)
@@ -88,9 +128,18 @@ class TaskRunner:
     # ------------------------------------------------------------------ control
     async def _run_guarded(self, rec: TaskRecord, url: str, password: str):
         secrets = Secrets(password=password, url=url, token=config.TEAM_TOKEN)
+        rec.secrets = secrets
+        for v in (password, url.split("://", 1)[-1].split("/", 1)[0]):
+            register_secret(v)
+        metrics = llm.new_metrics()
+        llm.METRICS.set(metrics)  # contexto propio de esta tarea asyncio
+        rec.metrics = {"fases_ms": {}, "llm": metrics}
         runner = _SingleTask(self, rec, url, password, secrets)
+        key = desktop_key(url)
         try:
-            await asyncio.wait_for(runner.run(), timeout=config.HARD_LIMIT)
+            # Presupuesto absoluto desde POST /tasks (incluye la espera por el escritorio).
+            budget = config.HARD_LIMIT - (time.monotonic() - rec.started_mono)
+            await asyncio.wait_for(self._run_with_slot(runner, key), timeout=max(1.0, budget))
         except asyncio.TimeoutError:
             runner.finalize("fallida", "Se agotó el tiempo antes de verificar el resultado.", None, None,
                             extra="Acciones realizadas: " + "; ".join(a.short() for a in rec.actions[-6:]))
@@ -100,7 +149,11 @@ class TaskRunner:
             runner.finalize("fallida", "Error técnico del agente al operar el escritorio; no se completó la tarea.", None, None)
         finally:
             await runner.close()
+            self.slots.release(key, rec.task_id)
             rec.finished = rec.finished or time.time()
+            runner.finish_metrics()
+            log.info("evento=fin task=%s estado=%s %s", rec.task_id, rec.estado,
+                     json.dumps(rec.metrics, ensure_ascii=False, separators=(",", ":")))
             self._write_log(rec)
             if config.MEMORY_V2 and rec.app_name and rec.actions:
                 # Éxito verificado fija la firma de UI del mapa; agotar tiempo/pasos cuenta como fallo de ruta.
@@ -113,11 +166,25 @@ class TaskRunner:
             if rec.app_name and rec.actions:
                 asyncio.create_task(runner.cartographer())
 
+    async def _run_with_slot(self, runner: "_SingleTask", key: str):
+        rec = runner.rec
+        deadline = rec.started_mono + config.OPERATOR_DEADLINE - MIN_USEFUL_S
+        t0 = time.monotonic()
+        if not await self.slots.acquire(key, rec.task_id, deadline):
+            runner.finalize("fallida", "El escritorio estaba ocupado por otra tarea durante todo el tiempo disponible; "
+                            "no se inició para no interferir con ella.", None, None)
+            return
+        runner.phase("espera_escritorio", t0)
+        if runner.remaining_operator() < MIN_USEFUL_S:
+            runner.finalize("fallida", "No quedó tiempo útil para operar el escritorio de forma segura.", None, None)
+            return
+        await runner.run()
+
     def _write_log(self, rec: TaskRecord):
         try:
             os.makedirs(config.LOG_DIR, exist_ok=True)
             with open(os.path.join(config.LOG_DIR, f"{rec.task_id}.json"), "w", encoding="utf-8") as f:
-                json.dump(rec.debug(), f, ensure_ascii=False, indent=1)
+                json.dump(rec.debug_safe(), f, ensure_ascii=False, indent=1)
         except Exception as e:
             log.warning("no se pudo escribir log: %s", e)
 
@@ -143,8 +210,9 @@ class _SingleTask:
         self.map_meta: dict = {}
         self.nav_failure = False                  # se agotó tiempo/pasos: la ruta usada no funcionó
         self.reconnects = 0                       # RECOVERY_V2
-        self.last_write: Optional[tuple] = None   # última acción de cambio ejecutada (guarda anti-duplicados)
-        self.observed_since_write = True
+        self.guard = CommitGuard()                # anti-duplicados de confirmaciones (RECOVERY_V2)
+        self.prev_tool = ""
+        self._png_cache: tuple[Optional[str], bytes] = (None, b"")
         self.last_sent_hash: Optional[str] = None  # PERCEPTION_V2: hash de la última captura completa enviada
         self.images_since_full = 0
 
@@ -158,6 +226,18 @@ class _SingleTask:
     def fmt_remaining(self) -> str:
         r = max(0, int(self.remaining_operator()))
         return f"{r // 60}:{r % 60:02d}"
+
+    # --------------------------------------------------------------- métricas
+    def phase(self, name: str, t_start: float) -> None:
+        ms = round((time.monotonic() - t_start) * 1000)
+        f = self.rec.metrics.setdefault("fases_ms", {})
+        f[name] = f.get(name, 0) + ms
+        log.info("evento=fase task=%s fase=%s ms=%d", self.rec.task_id, name, ms)
+
+    def finish_metrics(self) -> None:
+        m = self.rec.metrics
+        m.update({"pasos": self.rec.steps, "reconexiones": self.reconnects, "bloqueos_guarda": self.guard.blocked,
+                  "duracion_ms": round(self.elapsed() * 1000)})
 
     # ---------------------------------------------------------------- reporte
     def finalize(self, estado: str, resumen: str, respuesta: Optional[str], claves: Optional[list], extra: str = ""):
@@ -182,6 +262,7 @@ class _SingleTask:
     async def run(self):
         rec = self.rec
         # 1) Conectar al escritorio (un reintento)
+        t_conn = time.monotonic()
         for attempt in (1, 2):
             try:
                 self.rfb = self._make_rfb(config.VNC_CONNECT_TIMEOUT)
@@ -197,6 +278,7 @@ class _SingleTask:
                 await asyncio.sleep(2)
         rfb = self.rfb
         assert rfb is not None
+        self.phase("vnc_conexion", t_conn)
         await rfb.wait_stable(min_wait=0.6)
         shot, shot_hash = self._capture()
         self._save_shot(shot, 0)
@@ -207,6 +289,7 @@ class _SingleTask:
                 log.warning("firma de UI no disponible: %s", e)
 
         # 2) Planner
+        t_plan = time.monotonic()
         try:
             plan = await llm.call_json(
                 config.MODEL_PLANNER, prompts.PLANNER_SYSTEM,
@@ -219,6 +302,7 @@ class _SingleTask:
             plan = {"app_nombre": "desconocida", "tipo": "otro", "objetivo": rec.tarea, "datos": {},
                     "criterios_exito": ["evidencia visible en pantalla de que la tarea quedó hecha"],
                     "acciones_prohibidas": ["cualquier cambio no pedido"], "pasos_sugeridos": []}
+        self.phase("planner", t_plan)
         if not isinstance(plan, dict):
             plan = {"tipo": "otro", "objetivo": rec.tarea}
         plan.setdefault("tipo", "otro")
@@ -247,6 +331,7 @@ class _SingleTask:
         self.last_shots = [shot]
         verify_rounds = 0
         no_tool_strikes = 0
+        self._t_operator = time.monotonic()
 
         for step in range(1, config.MAX_STEPS + 1):
             if self.done:
@@ -343,7 +428,6 @@ class _SingleTask:
             except Exception as e:
                 return [{"type": "text", "text": f"Zoom inválido: {e}"}]
             rec.actions.append(ActionRecord(step, name, {k: args.get(k) for k in ("x0", "y0", "x1", "y1")}, why, "lectura"))
-            self.observed_since_write = True
             self.images_since_full += 1
             return [{"type": "text", "text": f"Zoom de la región {box} (ampliada). Las coordenadas para clics siguen siendo las de la pantalla completa. Tiempo restante: {self.fmt_remaining()}."},
                     llm.image_block(png)]
@@ -355,34 +439,54 @@ class _SingleTask:
             shot, h = self._capture()
             self._remember_shot(shot, step)
             rec.actions.append(ActionRecord(step, name, {"seconds": secs}, why, "lectura"))
-            self.observed_since_write = True
             return self._screen_blocks(f"Esperé {secs:.0f}s. Captura actual. Tiempo restante: {self.fmt_remaining()}.", shot, h)
 
         if name in ACTION_TOOLS:
+            if self.remaining_operator() <= 0:
+                # Nunca actuar fuera de plazo: lo que pase después cae en la tarea siguiente del evaluador.
+                self._timeout_finalize()
+                return []
             block = check_action(name, args, rec.plan)
             if block:
                 rec.actions.append(ActionRecord(step, name, args, why, risk, blocked=True))
                 return [{"type": "text", "text": block + f" Tiempo restante: {self.fmt_remaining()}."}]
-            wkey = _write_key(name, args)
-            if config.RECOVERY_V2:
-                block = self._write_guard(wkey)
+            commit = config.RECOVERY_V2 and is_commit(name, args, str(rec.plan.get("tipo", "")), self.prev_tool)
+            ckey = commit_key(name, args) if commit else None
+            extra_note = ""
+            pre_hash: Optional[str] = None
+            if commit and ckey is not None:
+                block = self.guard.check(ckey)
                 if block:
                     rec.actions.append(ActionRecord(step, name, args, why, risk, blocked=True))
                     return [{"type": "text", "text": block + f" Tiempo restante: {self.fmt_remaining()}."}]
+                if name == "double_click":
+                    # Un doble clic sobre una confirmación puede enviarla dos veces.
+                    name, extra_note = "click", "\nNota: el doble clic sobre una confirmación se ejecutó como clic simple."
+                try:
+                    pre_hash = rfb.frame_hash()
+                except Exception:
+                    pre_hash = None
             t_act = time.monotonic()
             try:
                 await self._do_action(name, args)
             except (RFBError, KeyError, ValueError) as e:
                 rec.actions.append(ActionRecord(step, name, args, why, risk))
                 if config.RECOVERY_V2 and self.rfb is not None and self.rfb.closed:
-                    # No sabemos si el servidor alcanzó a recibir la acción: tratarla como posiblemente aplicada.
-                    self.last_write, self.observed_since_write = wkey, False
+                    # No sabemos si el servidor alcanzó a recibir la acción: si confirmaba algo, queda incierta.
+                    if commit and ckey is not None:
+                        self.guard.record_commit(ckey, step, pre_hash, None, uncertain=True)
+                    self.prev_tool = name
                     return await self._recover_connection(step, name, uncertain=True)
                 return [{"type": "text", "text": f"La acción no se pudo ejecutar ({e}). Revisa los parámetros."}]
-            self.last_write, self.observed_since_write = wkey, False
             await rfb.wait_stable()
             changed = rfb.area_since(t_act) >= CHANGE_AREA
             shot, h = self._capture()
+            if config.RECOVERY_V2:
+                if commit and ckey is not None:
+                    self.guard.record_commit(ckey, step, pre_hash, h, uncertain=rfb.closed)
+                else:
+                    self.guard.record_action(name, changed)
+            self.prev_tool = name
             self._remember_shot(shot, step)
             rec.actions.append(ActionRecord(step, name, args, why, risk, changed=changed))
             warn = self.loop.push(name, args, changed)
@@ -396,7 +500,7 @@ class _SingleTask:
                 txt += "\n⏰ Quedan menos de 45 s: llama a done AHORA con lo que hayas verificado (o fallida si no verificaste)."
             if rfb.closed:
                 txt += "\n⚠ La conexión con el escritorio se cerró."
-            return self._screen_blocks(txt, shot, h)
+            return self._screen_blocks(txt + extra_note, shot, h)
 
         return [{"type": "text", "text": f"Herramienta desconocida: {name}"}]
 
@@ -462,12 +566,17 @@ class _SingleTask:
             await rfb.wait_stable(min_wait=0.3)
             fresh = rfb.screenshot_png()
             self._remember_shot(fresh, rec.steps)
+            if getattr(self, "_t_operator", None):
+                self.phase("operator", self._t_operator)
+            t_ver = time.monotonic()
             try:
                 ver = await asyncio.wait_for(self._verify(resumen, respuesta, evidencia), timeout=max(5, config.VERIFY_DEADLINE - self.elapsed()))
             except Exception as e:
                 log.warning("verifier falló: %s", e)
                 # Nunca convertir un fallo técnico del verificador en éxito.
                 ver = {"verificado": False, "motivo": f"verificador no disponible ({type(e).__name__})"}
+            self.phase("verifier", t_ver)
+            self._t_operator = time.monotonic()  # si hay otra ronda, el operador vuelve a contar desde aquí
             rec.verifier = ver
             riesgo = str(ver.get("riesgo_cambios_extra") or "").strip().lower()
             verificado = ver.get("verificado") is True and (not riesgo or riesgo == "ninguno")
@@ -533,6 +642,7 @@ class _SingleTask:
 
     # ----------------------------------------------------------- cartographer
     async def cartographer(self):
+        llm.METRICS.set(None)  # corre después de cerrar la tarea: no debe alterar sus métricas ya reportadas
         rec = self.rec
         try:
             old = self.runner.memory.get(rec.app_name) or {}
@@ -565,6 +675,7 @@ class _SingleTask:
         if budget < 5:
             return False
         self.reconnects += 1
+        t_rc = time.monotonic()
         await self.close()
         new = self._make_rfb(budget)
         try:
@@ -577,6 +688,7 @@ class _SingleTask:
             except Exception:
                 pass
             return False
+        self.phase("vnc_reconexion", t_rc)
         log.info("reconexión VNC %d correcta", self.reconnects)
         self.rfb = new
         self.last_sent_hash, self.images_since_full = None, 0
@@ -601,17 +713,6 @@ class _SingleTask:
                f"(un guardado repetido puede duplicar). Tiempo restante: {self.fmt_remaining()}.")
         return self._screen_blocks(txt, shot, h)
 
-    def _write_guard(self, wkey: Optional[tuple]) -> Optional[str]:
-        """Bloquea repetir de inmediato la MISMA acción de cambio sin haber observado antes el resultado."""
-        if wkey is None or self.last_write is None or self.observed_since_write:
-            return None
-        if not _same_write(self.last_write, wkey):
-            return None
-        return ("⛔ Guarda anti-duplicados: acabas de ejecutar esta misma acción de cambio y aún no comprobaste su efecto. "
-                "Repetirla puede duplicar un guardado, creación o exportación. Primero comprueba el estado real: usa wait "
-                "(carga lenta) o zoom (mensaje de confirmación, lista, ficha). Si tras observar confirmas que no se aplicó, "
-                "podrás repetirla.")
-
     def _capture(self) -> tuple[bytes, Optional[str]]:
         rfb = self.rfb
         assert rfb is not None
@@ -619,7 +720,12 @@ class _SingleTask:
             h = rfb.frame_hash()
         except Exception:
             h = None
-        return rfb.screenshot_png(), h
+        if h is not None and h == self._png_cache[0]:
+            return self._png_cache[1], h  # mismo framebuffer: mismos bytes PNG, sin recodificar (~100-300 ms)
+        png = rfb.screenshot_png()
+        if h is not None:
+            self._png_cache = (h, png)
+        return png, h
 
     def _screen_blocks(self, txt: str, shot: bytes, h: Optional[str]) -> list:
         """PERCEPTION_V2: no reenviar una captura idéntica a la última completa que el modelo aún tiene en contexto."""
@@ -671,25 +777,3 @@ class _SingleTask:
                             if seen > keep:
                                 items[j] = {"type": "text", "text": "[captura anterior omitida]"}
 
-
-def _write_key(name: str, args: dict) -> Optional[tuple]:
-    """Identidad de una acción de cambio no idempotente (clic o tecla que confirma). Escribir texto con
-    replace=true es idempotente y no se guarda."""
-    if str(args.get("risk", "")) != "cambio_esperado":
-        return None
-    try:
-        if name in ("click", "double_click"):
-            return (name, int(args["x"]), int(args["y"]))
-        if name == "press_key":
-            return (name, str(args.get("key", "")).strip().lower(), 0)
-    except (KeyError, TypeError, ValueError):
-        return None
-    return None
-
-
-def _same_write(a: tuple, b: tuple) -> bool:
-    if a[0] != b[0]:
-        return False
-    if a[0] == "press_key":
-        return a[1] == b[1]
-    return abs(a[1] - b[1]) <= WRITE_TOLERANCE_PX and abs(a[2] - b[2]) <= WRITE_TOLERANCE_PX

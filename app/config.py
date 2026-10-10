@@ -23,8 +23,7 @@ ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 MODEL_OPERATOR = os.environ.get("MODEL_OPERATOR", "claude-sonnet-5-5")
 MODEL_PLANNER = os.environ.get("MODEL_PLANNER", MODEL_OPERATOR)
 MODEL_VERIFIER = os.environ.get("MODEL_VERIFIER", MODEL_OPERATOR)
-# "claude-haiku-5-5" (default anterior) no es un ID de modelo válido: el mapa nunca se guardaba.
-MODEL_CARTOGRAPHER = os.environ.get("MODEL_CARTOGRAPHER", "claude-haiku-4-5")
+MODEL_CARTOGRAPHER = os.environ.get("MODEL_CARTOGRAPHER", "claude-haiku-5-5")  # ID vigente (docs, oct-2026)
 
 
 def _flag(name: str, default: bool) -> bool:
