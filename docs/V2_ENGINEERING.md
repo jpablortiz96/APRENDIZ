@@ -332,3 +332,7 @@ python scripts\probar.py material\pruebas\E5-homonimos.json
 **Observación sobre el contrato:** en E4, `POST /tasks` midió 2,92 s desde el cliente; el resto de mediciones de la sesión quedaron entre 0,35 y 1,67 s. El handler no hace E/S (solo crea la tarea asyncio), así que se atribuye a la red o al proxy. Queda como riesgo a vigilar.
 
 **Dependencia de Anthropic:** en los logs de producción entre las 20:24 y las 21:00 hay 60 tareas de otra aplicación. Desde las 20:54 la API respondió «credit balance is too low» y esas tareas terminaron `fallida` en ~2 s. Más tarde, staging recibió «usage limits» (límite de gasto). En los dos casos el agente fue fail-closed. No se sabe a qué evaluación corresponden esas tareas.
+
+### Promoción a producción
+
+Tras el 5/5 sobre staging, con 0 tareas en curso, se hizo un merge fast-forward de `main` (`98b34ff` → `31c8367`). Railway desplegó `31c8367` con estado SUCCESS, en el mismo dominio. Smoke no destructivo: `/health` listo, 401 sin token, 404 para un id inexistente. **Producción actual: v0.2.1 (`31c8367`). Rollback: v0.1.3 (`98b34ff`).**

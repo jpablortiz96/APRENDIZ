@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="300" viewBox="0 0 960 300" role="img" aria-labelledby="t d">
+  <title id="t">Watch the 2-minute demo</title>
+  <desc id="d">APRENDIZ demo video thumbnail</desc>
+  <clipPath id="frame"><rect width="960" height="300" rx="20"/></clipPath>
+  <rect width="960" height="300" rx="20" fill="#0A1024"/>
+  <g clip-path="url(#frame)">
+    <circle cx="120" cy="20" r="220" fill="#2DD4BF" opacity="0.08"/>
+    <circle cx="880" cy="300" r="240" fill="#8B5CF6" opacity="0.12"/>
+  </g>
+  <rect x="1" y="1" width="958" height="298" rx="20" fill="none" stroke="#334155" stroke-width="2"/>
+  <circle cx="190" cy="150" r="74" fill="#2DD4BF"/>
+  <path d="M168 112 L168 188 L232 150 Z" fill="#0A1024"/>
+  <g font-family="'Segoe UI', 'Helvetica Neue', Arial, sans-serif">
+    <text x="310" y="118" fill="#5EEAD4" font-size="18" font-weight="600" letter-spacing="4">DEMO · 2 MIN</text>
+    <text x="308" y="174" fill="#F8FAFC" font-size="46" font-weight="800">Watch the 2-minute demo</text>
+    <text x="310" y="214" fill="#94A3B8" font-size="20">APRENDIZ operating a legacy app it has never seen, through VNC</text>
+    <text x="310" y="246" fill="#C4B5FD" font-size="16">youtu.be/0G00tMEyqzA</text>
+  </g>
+</svg>

@@ -13,10 +13,17 @@
 
 <p align="center">
   <a href="https://github.com/jpablortiz96/APRENDIZ"><b>GitHub</b></a> ·
-  <a href="#-demo"><b>Demo</b></a> ·
+  <a href="https://youtu.be/0G00tMEyqzA"><b>Demo</b></a> ·
   <a href="https://aprendiz-production-6a41.up.railway.app/health"><b>Endpoint</b></a> ·
   <a href="docs/V2_ENGINEERING.md"><b>Engineering log</b></a>
 </p>
+
+<p align="center">
+  <a href="https://youtu.be/0G00tMEyqzA"><img src="docs/assets/demo-thumbnail.svg" alt="Watch the 2-minute demo" width="720"></a><br>
+  <a href="https://youtu.be/0G00tMEyqzA"><b>▶ Watch the 2-minute demo</b></a>
+</p>
+
+> **Producción:** v0.2.1, commit `31c8367`. **Rollback:** v0.1.3, commit `98b34ff`.
 
 ---
 
@@ -152,7 +159,7 @@ Ejecutadas una a una con `scripts/probar.py` (`__reset` → `POST /tasks` → so
 | **E4** Exportar pedidos | terminada | ✅ terminada | 54 s | Estado y rango de septiembre; una sola exportación | `true` |
 | **E5** Homónimos | **fallida** | ✅ fallida | 31 s | Dos «Ana Torres» identificados por NIT; nada modificado | `true` |
 
-v0.1.3, que es la versión en producción, también aprobó E1–E5 en el escritorio de práctica.
+v0.1.3, la versión anterior y referencia de rollback, también aprobó E1–E5 en el escritorio de práctica. La versión en producción es **v0.2.1** (`31c8367`), con el mismo código que el commit `53d7b99` validado en staging.
 
 ### D · Set oculto
 
@@ -280,7 +287,9 @@ En las preguntas, la primera línea del resumen es `respuesta: <valor>`. Los có
 
 ## 🎬 Demo
 
-**Video público (2 min):** _enlace pendiente. La URL facilitada aún no está disponible en YouTube; se publicará aquí cuando abra correctamente._
+<a href="https://youtu.be/0G00tMEyqzA"><img src="docs/assets/demo-thumbnail.svg" alt="Watch the 2-minute demo" width="720"></a>
+
+**[▶ Watch the 2-minute demo](https://youtu.be/0G00tMEyqzA)**: https://youtu.be/0G00tMEyqzA
 
 ## 🗺 Roadmap
 
@@ -299,7 +308,7 @@ app/      main.py · agent.py · rfb.py · keysyms.py · tools.py · prompts.py
           guardian.py · commit_guard.py · memory.py · llm.py · config.py
 scripts/  probar.py (ciclo real) · vnc_probe.py · bench.py (A/B sintético) · contract_smoke.py
 tests/    64 tests unitarios · sim_desktop.py (escritorio simulado)
-docs/     V2_ENGINEERING.md · assets/aprendiz-banner.svg
+docs/     V2_ENGINEERING.md · assets/aprendiz-banner.svg · assets/demo-thumbnail.svg
 ```
 
 ## 👤 Autor
